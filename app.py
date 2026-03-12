@@ -1,83 +1,93 @@
 import streamlit as st
 import requests, base64, pandas as pd
+import plotly.express as px
 from datetime import datetime, date, timedelta
 
-# --- 設定（そのまま維持） ---
+# --- 設定 ---
 ASANA_TOKEN = '2/1202260582260384/1213620305884302:3b2113ab646543840f0e4192076e7c08'
 ASANA_WORKSPACE_ID = '1200313649553191'
 TOGGL_TOKEN = '2236bb0c27861b351b5546732733043e'
 TOGGL_WORKSPACE_ID = '8358873'
 
-st.set_page_config(page_title="Work Analysis", layout="wide")
-
+st.set_page_config(page_title="Work Analysis Pro", layout="wide")
 st.sidebar.header("表示設定")
 target_date = st.sidebar.date_input("分析したい日を選択:", date.today())
-mode = st.sidebar.radio("表示モード:", ["その日のみ", "その日までの7日間"])
 
-# 検索範囲の設定
-if mode == "その日のみ":
-    start_dt = datetime.combine(target_date, datetime.min.time())
-    # 「今日」の場合は現在の時刻まで、過去日の場合は23:59まで
-    end_dt = datetime.now() if target_date == date.today() else datetime.combine(target_date, datetime.max.time())
-else:
-    start_dt = datetime.combine(target_date - timedelta(days=6), datetime.min.time())
-    end_dt = datetime.now() if target_date == date.today() else datetime.combine(target_date, datetime.max.time())
+st.title(f"📊 業務詳細分析: {target_date}")
 
-st.title(f"📊 業務分析: {start_dt.strftime('%m/%d')} ~ {end_dt.strftime('%m/%d')}")
-
-@st.cache_data(ttl=60) # キャッシュを1分に短縮してリアルタイム性を向上
-def get_analysis_data(start_iso, end_iso):
+# --- 1. Toggl/Asanaデータ取得（以前と同じ） ---
+@st.cache_data(ttl=60)
+def get_base_data(target_date_val):
+    start_dt = datetime.combine(target_date_val, datetime.min.time())
+    end_dt = datetime.combine(target_date_val, datetime.max.time())
     auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
-    
-    # 【修正ポイント】Summary APIではなく、より詳細な集計が可能なエンドポイントに変更
     t_url = f"https://api.track.toggl.com/reports/api/v3/workspace/{TOGGL_WORKSPACE_ID}/summary/time_entries"
-    
-    # 明示的にタイムゾーンを含めたISO形式でリクエスト
-    payload = {
-        "start_date": start_iso.split('T')[0], 
-        "end_date": end_iso.split('T')[0],
-        "grouping": "projects",
-        "sub_grouping": "time_entries"
-    }
-    
-    t_res = requests.post(t_url, headers={'Authorization': f'Basic {auth}', 'Content-Type': 'application/json'}, json=payload).json()
+    t_res = requests.post(t_url, headers={'Authorization': f'Basic {auth}', 'Content-Type': 'application/json'}, 
+                          json={"start_date": start_dt.strftime('%Y-%m-%d'), "end_date": end_dt.strftime('%Y-%m-%d')}).json()
     
     toggl_actuals = {}
     if 'groups' in t_res:
         for group in t_res['groups']:
             for sub in group.get('sub_groups', []):
                 title = sub.get('title') or "名称未設定"
-                sec = 0
-                if 'rates' in sub and sub['rates']:
-                    sec = sum(r.get('billable_seconds', 0) for r in sub['rates'])
-                elif 'seconds' in sub:
-                    sec = sub['seconds']
+                sec = sub.get('seconds', 0)
                 toggl_actuals[title] = toggl_actuals.get(title, 0) + (sec / 3600)
+    return toggl_actuals
 
-    # Asanaから予定取得
-    a_url = f"https://app.asana.com/api/1.0/tasks?workspace={ASANA_WORKSPACE_ID}&assignee=me&opt_fields=name,custom_fields"
-    a_res = requests.get(a_url, headers={'Authorization': f'Bearer {ASANA_TOKEN}'}).json()
-    asana_plans = {t['name']: next((float(cf.get('number_value') or 0) for cf in t.get('custom_fields', []) if "見積" in cf['name']), 0) for t in a_res.get('data', [])}
+# --- 2. PC操作ログの解析 ---
+def analyze_pc_log(target_date_val):
+    try:
+        # GitHubにアップしたCSVを読み込む
+        url = "https://raw.githubusercontent.com/ogihara-hiroki/my-dashboard/main/pc_usage_log.csv"
+        df_log = pd.read_csv(url)
+        df_log['timestamp'] = pd.to_datetime(df_log['timestamp'])
+        
+        # 選択した日付のデータのみ抽出
+        df_day = df_log[df_log['timestamp'].dt.date == target_date_val].copy()
+        
+        if df_day.empty:
+            return None
 
-    results = []
-    for name, actual in toggl_actuals.items():
-        if actual < 0.01: continue
-        plan = asana_plans.get(name, 0)
-        results.append({"タスク名": name, "予定(h)": plan, "実績(h)": round(actual, 2), "乖離(h)": round(actual - plan, 2) if plan > 0 else 0})
-    return pd.DataFrame(results)
+        # アプリ名の簡易判定
+        def detect_app(title):
+            title = str(title).lower()
+            if 'excel' in title: return 'Excel (作業/資料)'
+            if 'chrome' in title or 'edge' in title: return 'ブラウザ (調査/メール)'
+            if 'visual studio' in title or 'vscode' in title: return 'IDE (開発)'
+            if 'エクスプローラー' in title or 'folder' in title: return 'フォルダ (探す無駄)'
+            if 'teams' in title or 'slack' in title or 'outlook' in title: return '連絡対応'
+            return 'その他'
 
-# ISO形式の文字列を作成
-df = get_analysis_data(start_dt.isoformat(), end_dt.isoformat())
+        df_day['app'] = df_day['window_title'].apply(detect_app)
+        app_counts = df_day['app'].value_counts() * 10 / 3600 # 10秒おきなので時間に変換
+        return app_counts
+    except:
+        return None
 
-if not df.empty:
-    df = df.sort_values("実績(h)", ascending=False)
-    st.metric("この期間の総稼働時間", f"{df['実績(h)'].sum():.2f} 時間")
+# 実行
+toggl_data = get_base_data(target_date)
+pc_counts = analyze_pc_log(target_date)
+
+# 表示
+if toggl_data:
+    col1, col2 = st.columns([1, 1])
     
-    # 棒グラフ（Plotlyでリッチに表示）
-    import plotly.express as px
-    fig = px.bar(df, x="実績(h)", y="タスク名", orientation='h', color="実績(h)", color_continuous_scale="Blues", barmode="group")
-    st.plotly_chart(fig, use_container_width=True)
-    
-    st.dataframe(df, use_container_width=True)
+    with col1:
+        st.subheader("🛠 タスク別実績 (Toggl)")
+        df_t = pd.DataFrame(list(toggl_data.items()), columns=['タスク', '時間(h)']).sort_values('時間(h)', ascending=False)
+        st.plotly_chart(px.pie(df_t, values='時間(h)', names='タスク', hole=0.4), use_container_width=True)
+
+    with col2:
+        st.subheader("💻 実際の操作内訳 (PC Log)")
+        if pc_counts is not None:
+            df_pc = pd.DataFrame({'アプリ': pc_counts.index, '時間(h)': pc_counts.values})
+            st.plotly_chart(px.pie(df_pc, values='時間(h)', names='アプリ', hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu), use_container_width=True)
+        else:
+            st.info("この日のPC操作ログがGitHubにありません。")
+
+    if pc_counts is not None and 'フォルダ (探す無駄)' in pc_counts:
+        waste_min = pc_counts['フォルダ (探す無駄)'] * 60
+        if waste_min > 10:
+            st.warning(f"⚠️ 【無駄発見】今日は「資料探し（フォルダ操作）」に **{waste_min:.1f}分** 使っています。よく使うフォルダをAsanaにリンクしませんか？")
 else:
-    st.info(f"{target_date} の記録は見つかりませんでした。Togglでタイマーを止めてから再試行するか、期間を確認してください。")
+    st.info("データがありません。")
