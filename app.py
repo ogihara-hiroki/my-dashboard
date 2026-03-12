@@ -53,37 +53,43 @@ def get_pc_analysis(target_date_val):
             return 'その他'
 
         df_day['アプリ'] = df_day['window_title'].apply(detect_app)
-        # 10秒おきなので回数*10秒/3600で時間に変換
         df_pc = df_day['アプリ'].value_counts().reset_index()
         df_pc.columns = ['アプリ', '操作時間(h)']
-        df_pc['操作時間(h)'] = df_pc['操作時間(h)'] * 10 / 3600
+        df_pc['操作時間(h)'] = round(df_pc['操作時間(h)'] * 10 / 3600, 2)
         return df_pc
     except:
         return None
 
-# --- 表示 ---
+# --- 表示メイン ---
 df_t = get_toggl_data(target_date)
+
 if not df_t.empty:
-    df_t = df_t.sort_values("実績(h)", ascending=True) # 以前のように長いものを上に
-    st.metric("今日の総稼働時間", f"{df_t['実績(h)'].sum():.2f} 時間")
+    # 1. サマリー表示
+    total_h = df_t['実績(h)'].sum()
+    st.metric("今日の総稼働時間", f"{total_h:.2f} 時間")
     
-    # 以前の横棒グラフを復活
-    fig_t = px.bar(df_t, x="実績(h)", y="タスク名", orientation='h', 
-                   title="タスク別実績時間", color="実績(h)", color_continuous_scale="Blues")
+    # 2. 横棒グラフ（以前のスタイル）
+    df_plot = df_t.sort_values("実績(h)", ascending=True)
+    fig_t = px.bar(df_plot, x="実績(h)", y="タスク名", orientation='h', 
+                   title="タスク別実績時間（グラフ）", color="実績(h)", color_continuous_scale="Blues")
     st.plotly_chart(fig_t, use_container_width=True)
 
-    # PCログは「必要なときだけ見る」ように下に配置
+    # 3. 詳細表（今回追加）
+    st.subheader("📋 詳細データテーブル")
+    st.dataframe(df_t.sort_values("実績(h)", ascending=False), use_container_width=True)
+
+    # 4. PCログ（折りたたみ式）
     st.markdown("---")
     with st.expander("💻 PC操作ログから見る「実際の動き」の内訳を確認"):
         df_pc = get_pc_analysis(target_date)
         if df_pc is not None:
-            col1, col2 = st.columns([1, 1])
-            with col1:
+            c1, c2 = st.columns([1, 1])
+            with c1:
                 st.plotly_chart(px.bar(df_pc, x="操作時間(h)", y="アプリ", orientation='h', color="アプリ"), use_container_width=True)
-            with col2:
-                st.write("上位の操作タイトル:")
-                st.write(get_pc_analysis(target_date)) # 表形式で詳細表示
+            with c2:
+                st.write("アプリ別操作合計時間:")
+                st.table(df_pc)
         else:
             st.info("この日のPC操作ログがGitHubに見つかりません。")
 else:
-    st.info("データがありません。")
+    st.info(f"{target_date} のデータはありません。")
