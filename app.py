@@ -4,7 +4,7 @@ import plotly.express as px
 from datetime import datetime, date
 
 # --- 設定（★ここをご自身のトークンに書き換えてください） ---
-GITHUB_TOKEN = 'あなたのトークンをここに貼る'
+GITHUB_TOKEN = st.secrets["MY_GITHUB_TOKEN"]
 REPO_NAME = 'ogihara-hiroki/my-dashboard'
 ASANA_TOKEN = '2/1202260582260384/1213620305884302:3b2113ab646543840f0e4192076e7c08'
 TOGGL_TOKEN = '2236bb0c27861b351b5546732733043e'
