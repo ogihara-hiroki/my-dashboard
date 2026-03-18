@@ -70,12 +70,11 @@ def get_pc_analysis(target_date_val, mode="日次"):
 # --- 3. Togglからデータを取得する関数 (時差・詳細取得対策版) ---
 def get_toggl_analysis(target_date_val, mode="日次"):
     try:
-        # Toggl v3 API が求める "YYYY-MM-DD" 形式に修正
+        # 日付フォーマット
         if mode == "日次":
             start_date = target_date_val.strftime('%Y-%m-%d')
             end_date = target_date_val.strftime('%Y-%m-%d')
         else:
-            # 週次：月曜日〜日曜日
             start_of_week = target_date_val - timedelta(days=target_date_val.weekday())
             end_of_week = start_of_week + timedelta(days=6)
             start_date = start_of_week.strftime('%Y-%m-%d')
@@ -88,33 +87,41 @@ def get_toggl_analysis(target_date_val, mode="日次"):
             "Content-Type": "application/json"
         }
         
-        # payloadの形式をシンプルに修正
+        # ★修正ポイント：group_by を追加して「プロジェクト別」を明示する
         payload = {
             "start_date": start_date,
-            "end_date": end_date
+            "end_date": end_date,
+            "group_by": "project" 
         }
         
         res = requests.post(url, headers=headers, json=payload)
         
-        # エラー時の詳細を表示するように強化
         if res.status_code != 200:
-            st.error(f"Toggl APIエラー: {res.status_code} - {res.text}")
+            # エラーが出た場合のみ詳細を表示
+            st.error(f"Togglエラー詳細: {res.text}")
             return None
         
         report_data = res.json()
         entries = []
+        
+        # Toggl v3 Summary のレスポンス構造に合わせて解析
         for item in report_data:
-            # プロジェクト名の取得ロジック
-            project = item.get('title', {}).get('project', 'なし')
-            if project is None: project = 'なし'
+            # プロジェクト名を取得（'なし' の場合も考慮）
+            project_info = item.get('title', {})
+            project_name = project_info.get('project') if project_info else 'なし'
+            if not project_name: project_name = 'なし'
             
-            duration = item.get('seconds', 0) / 3600
-            if duration > 0:
-                entries.append({'プロジェクト': project, '時間(h)': round(duration, 2)})
+            # 合計秒数を時間(h)に変換
+            duration_sec = item.get('seconds', 0)
+            duration_h = round(duration_sec / 3600, 2)
+            
+            if duration_h > 0:
+                entries.append({'プロジェクト': project_name, '時間(h)': duration_h})
         
         return pd.DataFrame(entries) if entries else None
+        
     except Exception as e:
-        st.error(f"Toggl接続エラー: {e}")
+        st.error(f"接続エラー: {e}")
         return None
 
 # --- サイドバー構成 ---
