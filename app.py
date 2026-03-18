@@ -17,17 +17,13 @@ st.set_page_config(page_title="Work Analysis Pro", layout="wide")
 def get_pc_analysis(target_date_val, mode="日次"):
     try:
         url = f"https://raw.githubusercontent.com/{REPO_NAME}/main/pc_usage_log.csv"
-        # encoding='utf-8-sig' を指定して、timestamp列を正しく認識させる
-        df_log = pd.read_csv(url, encoding='utf-8-sig')
+        # ★修正：列名を明示的に指定し、1行目を飛ばさないように設定を安定させる
+        df_log = pd.read_csv(url, encoding='utf-8-sig', names=['timestamp', 'window_title'], header=None)
         
-        # 列名の前後に空白が入っている場合を考慮してクリーンアップ
+        # 列名のクリーンアップ
         df_log.columns = df_log.columns.str.strip()
         
-        if 'timestamp' not in df_log.columns:
-            st.error(f"CSV内に 'timestamp' 列が見つかりません。現在の列名: {df_log.columns.tolist()}")
-            return None, ""
-
-        # 以降の処理
+        # timestamp列を日付型に変換（エラーデータは無視）
         df_log['timestamp'] = pd.to_datetime(df_log['timestamp'], errors='coerce')
         df_log = df_log.dropna(subset=['timestamp'])
         
@@ -35,6 +31,7 @@ def get_pc_analysis(target_date_val, mode="日次"):
             df_filtered = df_log[df_log['timestamp'].dt.date == target_date_val].copy()
             title_suffix = f"({target_date_val})"
         else:
+            # 週次：月曜日〜日曜日の範囲で抽出
             start_of_week = target_date_val - timedelta(days=target_date_val.weekday())
             end_of_week = start_of_week + timedelta(days=6)
             df_filtered = df_log[(df_log['timestamp'].dt.date >= start_of_week) & 
@@ -46,20 +43,23 @@ def get_pc_analysis(target_date_val, mode="日次"):
 
         def detect_app(title):
             title = str(title).lower()
+            # ★改善：専門ソフトを先に判定させる
+            if 'automation studio' in title: return 'Automation Studio (設計)'
+            if 'visual studio' in title or 'vscode' in title: return 'IDE (開発)'
             if 'excel' in title: return 'Excel (作業/資料)'
             if 'chrome' in title or 'edge' in title: return 'ブラウザ (調査/メール)'
-            if 'visual studio' in title or 'vscode' in title: return 'IDE (開発)'
-            if 'automation studio' in title: return 'Automation Studio (設計)'
             if 'エクスプローラー' in title or 'folder' in title: return 'フォルダ (探す無駄)'
             return 'その他'
 
         df_filtered['アプリ'] = df_filtered['window_title'].apply(detect_app)
         df_res = df_filtered['アプリ'].value_counts().reset_index()
         df_res.columns = ['アプリ', '合計時間(h)']
+        # 10秒間隔のログ（1行 = 10秒）を時間に変換
         df_res['合計時間(h)'] = round(df_res['合計時間(h)'] * 10 / 3600, 2)
         return df_res, title_suffix
     except Exception as e:
-        st.error(f"解析エラー: {e}")
+        # 具体的なエラーを表示
+        st.error(f"解析エラーが発生しました: {e}")
         return None, ""
 
 # --- サイドバー構成 ---
