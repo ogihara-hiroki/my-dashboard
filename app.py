@@ -17,23 +17,26 @@ st.set_page_config(page_title="Work Analysis Pro", layout="wide")
 def get_pc_analysis(target_date_val, mode="日次"):
     try:
         url = f"https://raw.githubusercontent.com/{REPO_NAME}/main/pc_usage_log.csv"
-        # 読み込み時にエラーが出ないよう、念のため encoding='utf-8-sig' を想定
-        df_log = pd.read_csv(url)
+        # encoding='utf-8-sig' を指定して、timestamp列を正しく認識させる
+        df_log = pd.read_csv(url, encoding='utf-8-sig')
         
-        # timestamp列を確実に日付型に変換
+        # 列名の前後に空白が入っている場合を考慮してクリーンアップ
+        df_log.columns = df_log.columns.str.strip()
+        
+        if 'timestamp' not in df_log.columns:
+            st.error(f"CSV内に 'timestamp' 列が見つかりません。現在の列名: {df_log.columns.tolist()}")
+            return None, ""
+
+        # 以降の処理
         df_log['timestamp'] = pd.to_datetime(df_log['timestamp'], errors='coerce')
-        # エラー（空行など）を削除
         df_log = df_log.dropna(subset=['timestamp'])
         
         if mode == "日次":
-            # 日付を date 型にして比較
             df_filtered = df_log[df_log['timestamp'].dt.date == target_date_val].copy()
             title_suffix = f"({target_date_val})"
         else:
-            # 週の開始日（月曜日）を計算
             start_of_week = target_date_val - timedelta(days=target_date_val.weekday())
             end_of_week = start_of_week + timedelta(days=6)
-            # 範囲指定でフィルタリング
             df_filtered = df_log[(df_log['timestamp'].dt.date >= start_of_week) & 
                                  (df_log['timestamp'].dt.date <= end_of_week)].copy()
             title_suffix = f"({start_of_week} 〜 {end_of_week})"
@@ -53,11 +56,9 @@ def get_pc_analysis(target_date_val, mode="日次"):
         df_filtered['アプリ'] = df_filtered['window_title'].apply(detect_app)
         df_res = df_filtered['アプリ'].value_counts().reset_index()
         df_res.columns = ['アプリ', '合計時間(h)']
-        # 10秒間隔のログを時間に変換
         df_res['合計時間(h)'] = round(df_res['合計時間(h)'] * 10 / 3600, 2)
         return df_res, title_suffix
     except Exception as e:
-        # エラー内容を画面に出すとデバッグしやすいです
         st.error(f"解析エラー: {e}")
         return None, ""
 
