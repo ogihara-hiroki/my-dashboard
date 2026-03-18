@@ -34,6 +34,7 @@ def update_github_status(status_text):
 def get_pc_analysis(target_date_val, mode="日次"):
     try:
         url = f"https://raw.githubusercontent.com/{REPO_NAME}/main/pc_usage_log.csv"
+        # 列名を明示的に指定して読み込み
         df_log = pd.read_csv(url, encoding='utf-8-sig', names=['timestamp', 'window_title'], header=None)
         df_log['timestamp'] = pd.to_datetime(df_log['timestamp'], errors='coerce')
         df_log = df_log.dropna(subset=['timestamp'])
@@ -62,15 +63,16 @@ def get_pc_analysis(target_date_val, mode="日次"):
         df_filtered['アプリ'] = df_filtered['window_title'].apply(detect_app)
         df_res = df_filtered['アプリ'].value_counts().reset_index()
         df_res.columns = ['アプリ', '合計時間(h)']
+        # 10秒間隔のログを時間に変換
         df_res['合計時間(h)'] = round(df_res['合計時間(h)'] * 10 / 3600, 2)
         return df_res, period_text
     except:
         return None, ""
 
-# --- 3. Togglからデータを取得する関数 (時差・詳細取得対策版) ---
+# --- 3. Togglからデータを取得する関数 (Summary API v3 最終仕様) ---
 def get_toggl_analysis(target_date_val, mode="日次"):
     try:
-        # 日付フォーマット
+        # 日付フォーマット設定
         if mode == "日次":
             start_date = target_date_val.strftime('%Y-%m-%d')
             end_date = target_date_val.strftime('%Y-%m-%d')
@@ -87,44 +89,40 @@ def get_toggl_analysis(target_date_val, mode="日次"):
             "Content-Type": "application/json"
         }
         
-        # ★修正ポイント：group_by を追加して「プロジェクト別」を明示する
+        # ★ Toggl API v3 の必須パラメータをすべて網羅
         payload = {
             "start_date": start_date,
             "end_date": end_date,
-            "group_by": "project" # ← "project_id" から "project" に変更
+            "group_by": "project",
+            "summary_setup": {
+                "grouping": "projects"
+            }
         }
         
         res = requests.post(url, headers=headers, json=payload)
         
         if res.status_code != 200:
-            # エラーが出た場合のみ詳細を表示
             st.error(f"Togglエラー詳細: {res.text}")
             return None
         
         report_data = res.json()
         entries = []
-        
-        # Toggl v3 Summary のレスポンス構造に合わせて解析
         for item in report_data:
-            # プロジェクト名を取得（'なし' の場合も考慮）
+            # プロジェクト名と秒数を取得
             project_info = item.get('title', {})
             project_name = project_info.get('project') if project_info else 'なし'
             if not project_name: project_name = 'なし'
             
-            # 合計秒数を時間(h)に変換
-            duration_sec = item.get('seconds', 0)
-            duration_h = round(duration_sec / 3600, 2)
-            
+            duration_h = round(item.get('seconds', 0) / 3600, 2)
             if duration_h > 0:
                 entries.append({'プロジェクト': project_name, '時間(h)': duration_h})
         
         return pd.DataFrame(entries) if entries else None
-        
     except Exception as e:
         st.error(f"接続エラー: {e}")
         return None
 
-# --- サイドバー構成 ---
+# --- メイン画面構成 ---
 st.sidebar.header("表示設定")
 analysis_mode = st.sidebar.radio("分析範囲:", ["日次", "週次"])
 target_date = st.sidebar.date_input("基準日:", date.today())
@@ -139,10 +137,9 @@ else:
     update_github_status("OFF")
     st.sidebar.warning("指示を送信: OFF")
 
-# --- メイン表示 ---
-st.title(f"📊 業務分析: {analysis_mode}")
+st.title(f"📊 業務分析ダッシュボード: {analysis_mode}")
 
-# A. PC操作ログ
+# A. PC操作ログセクション
 df_pc, period_text = get_pc_analysis(target_date, analysis_mode)
 if df_pc is not None:
     st.subheader(f"💻 PC操作ログの内訳 {period_text}")
@@ -152,11 +149,11 @@ if df_pc is not None:
     with c2:
         st.table(df_pc)
 else:
-    st.info(f"💡 PCログはありません。")
+    st.info(f"💡 {target_date} のPCログはありません。")
 
 st.markdown("---")
 
-# B. Toggl 作業記録
+# B. Toggl 作業記録セクション
 df_toggl = get_toggl_analysis(target_date, analysis_mode)
 if df_toggl is not None:
     st.subheader(f"⏱️ Toggl 作業記録 {analysis_mode}")
