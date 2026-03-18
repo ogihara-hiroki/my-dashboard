@@ -70,42 +70,44 @@ def get_pc_analysis(target_date_val, mode="日次"):
 # --- 3. Togglからデータを取得する関数 (時差・詳細取得対策版) ---
 def get_toggl_analysis(target_date_val, mode="日次"):
     try:
-        # 時差対策: 日本時間(JST)の開始と終了を明示する
+        # Toggl v3 API が求める "YYYY-MM-DD" 形式に修正
         if mode == "日次":
-            start_dt = datetime.combine(target_date_val, datetime.min.time())
-            end_dt = datetime.combine(target_date_val, datetime.max.time())
+            start_date = target_date_val.strftime('%Y-%m-%d')
+            end_date = target_date_val.strftime('%Y-%m-%d')
         else:
+            # 週次：月曜日〜日曜日
             start_of_week = target_date_val - timedelta(days=target_date_val.weekday())
-            start_dt = datetime.combine(start_of_week, datetime.min.time())
-            end_dt = datetime.combine(start_of_week + timedelta(days=6), datetime.max.time())
+            end_of_week = start_of_week + timedelta(days=6)
+            start_date = start_of_week.strftime('%Y-%m-%d')
+            end_date = end_of_week.strftime('%Y-%m-%d')
 
-        # ISO形式に変換
-        start_date_str = start_dt.strftime('%Y-%m-%dT%H:%M:%S')
-        end_date_str = end_dt.strftime('%Y-%m-%dT%H:%M:%S')
-
-        # Toggl Reports API v3 (Summary)
         url = f"https://api.track.toggl.com/reports/api/v3/workspace/{TOGGL_WORKSPACE_ID}/summary/time_entries"
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
         headers = {
             "Authorization": f"Basic {auth}",
             "Content-Type": "application/json"
         }
-        # 日本時間を考慮するためタイムゾーンを指定（必要に応じて）
+        
+        # payloadの形式をシンプルに修正
         payload = {
-            "start_date": start_date_str,
-            "end_date": end_date_str
+            "start_date": start_date,
+            "end_date": end_date
         }
         
         res = requests.post(url, headers=headers, json=payload)
         
+        # エラー時の詳細を表示するように強化
         if res.status_code != 200:
-            st.error(f"Toggl APIエラー: {res.status_code}")
+            st.error(f"Toggl APIエラー: {res.status_code} - {res.text}")
             return None
         
         report_data = res.json()
         entries = []
         for item in report_data:
-            project = item.get('title', {}).get('project', 'なし') or 'なし'
+            # プロジェクト名の取得ロジック
+            project = item.get('title', {}).get('project', 'なし')
+            if project is None: project = 'なし'
+            
             duration = item.get('seconds', 0) / 3600
             if duration > 0:
                 entries.append({'プロジェクト': project, '時間(h)': round(duration, 2)})
