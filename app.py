@@ -4,14 +4,14 @@ import plotly.express as px
 from datetime import datetime, date, timedelta
 import urllib3
 
-# SSL警告を非表示にする（PCログ取得用）
+# SSL警告を非表示にする
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- 設定 ---
 GITHUB_TOKEN = st.secrets["MY_GITHUB_TOKEN"]
 REPO_NAME = 'ogihara-hiroki/my-dashboard'
 STATUS_FILE = 'status.txt'
-TOGGL_TOKEN = '2236bb0c27861b351b5546732733043e' # 以前のコードより引用
+TOGGL_TOKEN = '2236bb0c27861b351b5546732733043e'
 TOGGL_WORKSPACE_ID = '8358873'
 
 st.set_page_config(page_title="Work Analysis Pro", layout="wide")
@@ -28,13 +28,12 @@ def update_github_status(status_text):
         data = {"message": f"Switch to {status_text}", "content": content, "sha": sha}
         requests.put(url, headers=headers, json=data)
     except:
-        st.error("リモコン操作に失敗しました。")
+        pass
 
-# --- 2. PC操作ログを解析する関数 (週次対応) ---
+# --- 2. PC操作ログを解析する関数 ---
 def get_pc_analysis(target_date_val, mode="日次"):
     try:
         url = f"https://raw.githubusercontent.com/{REPO_NAME}/main/pc_usage_log.csv"
-        # 列名を明示的に指定
         df_log = pd.read_csv(url, encoding='utf-8-sig', names=['timestamp', 'window_title'], header=None)
         df_log['timestamp'] = pd.to_datetime(df_log['timestamp'], errors='coerce')
         df_log = df_log.dropna(subset=['timestamp'])
@@ -68,77 +67,94 @@ def get_pc_analysis(target_date_val, mode="日次"):
     except:
         return None, ""
 
-# --- 3. Togglからデータを取得する関数 (週次対応) ---
+# --- 3. Togglからデータを取得する関数 (時差・詳細取得対策版) ---
 def get_toggl_analysis(target_date_val, mode="日次"):
     try:
+        # 時差対策: 日本時間(JST)の開始と終了を明示する
         if mode == "日次":
-            start_date = target_date_val.isoformat()
-            end_date = target_date_val.isoformat()
+            start_dt = datetime.combine(target_date_val, datetime.min.time())
+            end_dt = datetime.combine(target_date_val, datetime.max.time())
         else:
-            start_date = (target_date_val - timedelta(days=target_date_val.weekday())).isoformat()
-            end_date = (target_date_val - timedelta(days=target_date_val.weekday()) + timedelta(days=6)).isoformat()
+            start_of_week = target_date_val - timedelta(days=target_date_val.weekday())
+            start_dt = datetime.combine(start_of_week, datetime.min.time())
+            end_dt = datetime.combine(start_of_week + timedelta(days=6), datetime.max.time())
 
+        # ISO形式に変換
+        start_date_str = start_dt.strftime('%Y-%m-%dT%H:%M:%S')
+        end_date_str = end_dt.strftime('%Y-%m-%dT%H:%M:%S')
+
+        # Toggl Reports API v3 (Summary)
         url = f"https://api.track.toggl.com/reports/api/v3/workspace/{TOGGL_WORKSPACE_ID}/summary/time_entries"
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
-        headers = {"Authorization": f"Basic {auth}"}
-        data = {"start_date": start_date, "end_date": end_date}
+        headers = {
+            "Authorization": f"Basic {auth}",
+            "Content-Type": "application/json"
+        }
+        # 日本時間を考慮するためタイムゾーンを指定（必要に応じて）
+        payload = {
+            "start_date": start_date_str,
+            "end_date": end_date_str
+        }
         
-        res = requests.post(url, headers=headers, json=data)
-        if res.status_code != 200: return None
+        res = requests.post(url, headers=headers, json=payload)
+        
+        if res.status_code != 200:
+            st.error(f"Toggl APIエラー: {res.status_code}")
+            return None
         
         report_data = res.json()
         entries = []
         for item in report_data:
             project = item.get('title', {}).get('project', 'なし') or 'なし'
             duration = item.get('seconds', 0) / 3600
-            entries.append({'プロジェクト': project, '時間(h)': round(duration, 2)})
+            if duration > 0:
+                entries.append({'プロジェクト': project, '時間(h)': round(duration, 2)})
         
         return pd.DataFrame(entries) if entries else None
-    except:
+    except Exception as e:
+        st.error(f"Toggl接続エラー: {e}")
         return None
 
-# --- サイドバー表示設定 ---
+# --- サイドバー構成 ---
 st.sidebar.header("表示設定")
-analysis_mode = st.sidebar.radio("分析範囲を選択:", ["日次", "週次"])
-target_date = st.sidebar.date_input("日付を選択:", date.today())
+analysis_mode = st.sidebar.radio("分析範囲:", ["日次", "週次"])
+target_date = st.sidebar.date_input("基準日:", date.today())
 
 st.sidebar.markdown("---")
 st.sidebar.header("PCログリモコン")
-if st.sidebar.checkbox("PCログ記録を開始"):
-    st.sidebar.success("指示を送信: ON")
+remote_on = st.sidebar.checkbox("PCログ記録を開始")
+if remote_on:
     update_github_status("ON")
-    st.sidebar.info("🚀 PC側で記録中です...")
+    st.sidebar.success("指示を送信: ON")
 else:
-    st.sidebar.warning("指示を送信: OFF")
     update_github_status("OFF")
+    st.sidebar.warning("指示を送信: OFF")
 
-# --- メインエリア表示 ---
-st.title(f"📊 業務分析ダッシュボード: {analysis_mode}")
+# --- メイン表示 ---
+st.title(f"📊 業務分析: {analysis_mode}")
 
-# A. PC操作ログセクション
+# A. PC操作ログ
 df_pc, period_text = get_pc_analysis(target_date, analysis_mode)
 if df_pc is not None:
     st.subheader(f"💻 PC操作ログの内訳 {period_text}")
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        fig_pc = px.pie(df_pc, values='合計時間(h)', names='アプリ', hole=0.4)
-        st.plotly_chart(fig_pc, use_container_width=True)
-    with col2:
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        st.plotly_chart(px.pie(df_pc, values='合計時間(h)', names='アプリ', hole=0.4), use_container_width=True)
+    with c2:
         st.table(df_pc)
 else:
-    st.info(f"💡 指定期間 {target_date} のPCログはありません。")
+    st.info(f"💡 PCログはありません。")
 
 st.markdown("---")
 
-# B. Togglセクション (PCログがなくても実行される)
+# B. Toggl 作業記録
 df_toggl = get_toggl_analysis(target_date, analysis_mode)
 if df_toggl is not None:
     st.subheader(f"⏱️ Toggl 作業記録 {analysis_mode}")
-    col3, col4 = st.columns([2, 1])
-    with col3:
-        fig_toggl = px.bar(df_toggl, x='プロジェクト', y='時間(h)', color='プロジェクト', text_auto=True)
-        st.plotly_chart(fig_toggl, use_container_width=True)
-    with col4:
+    c3, c4 = st.columns([2, 1])
+    with c3:
+        st.plotly_chart(px.bar(df_toggl, x='プロジェクト', y='時間(h)', color='プロジェクト', text_auto=True), use_container_width=True)
+    with c4:
         st.table(df_toggl)
 else:
-    st.info(f"💡 指定期間 {target_date} の Toggl 記録はありません。")
+    st.warning(f"⚠️ {target_date} の Toggl 記録が見つかりません。")
