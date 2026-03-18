@@ -91,7 +91,7 @@ def get_toggl_analysis(target_date_val, mode="日次"):
         payload = {
             "start_date": start_date,
             "end_date": end_date,
-            "group_by": "project_id" # ← ここがエラーの原因です
+            "group_by": "project" # ← "project_id" から "project" に変更
         }
         
         res = requests.post(url, headers=headers, json=payload)
