@@ -17,28 +17,36 @@ st.set_page_config(page_title="Work Analysis Pro", layout="wide")
 def get_pc_analysis(target_date_val, mode="日次"):
     try:
         url = f"https://raw.githubusercontent.com/{REPO_NAME}/main/pc_usage_log.csv"
+        # 読み込み時にエラーが出ないよう、念のため encoding='utf-8-sig' を想定
         df_log = pd.read_csv(url)
-        df_log['timestamp'] = pd.to_datetime(df_log['timestamp'])
+        
+        # timestamp列を確実に日付型に変換
+        df_log['timestamp'] = pd.to_datetime(df_log['timestamp'], errors='coerce')
+        # エラー（空行など）を削除
+        df_log = df_log.dropna(subset=['timestamp'])
         
         if mode == "日次":
+            # 日付を date 型にして比較
             df_filtered = df_log[df_log['timestamp'].dt.date == target_date_val].copy()
             title_suffix = f"({target_date_val})"
         else:
-            # 週の開始日（月曜日）と終了日（日曜日）を計算
+            # 週の開始日（月曜日）を計算
             start_of_week = target_date_val - timedelta(days=target_date_val.weekday())
             end_of_week = start_of_week + timedelta(days=6)
+            # 範囲指定でフィルタリング
             df_filtered = df_log[(df_log['timestamp'].dt.date >= start_of_week) & 
                                  (df_log['timestamp'].dt.date <= end_of_week)].copy()
             title_suffix = f"({start_of_week} 〜 {end_of_week})"
 
-        if df_filtered.empty: return None, ""
+        if df_filtered.empty:
+            return None, ""
 
         def detect_app(title):
             title = str(title).lower()
             if 'excel' in title: return 'Excel (作業/資料)'
             if 'chrome' in title or 'edge' in title: return 'ブラウザ (調査/メール)'
             if 'visual studio' in title or 'vscode' in title: return 'IDE (開発)'
-            if 'automation studio' in title: return 'Automation Studio (設計)' # ログにあったAS用
+            if 'automation studio' in title: return 'Automation Studio (設計)'
             if 'エクスプローラー' in title or 'folder' in title: return 'フォルダ (探す無駄)'
             return 'その他'
 
@@ -48,7 +56,9 @@ def get_pc_analysis(target_date_val, mode="日次"):
         # 10秒間隔のログを時間に変換
         df_res['合計時間(h)'] = round(df_res['合計時間(h)'] * 10 / 3600, 2)
         return df_res, title_suffix
-    except:
+    except Exception as e:
+        # エラー内容を画面に出すとデバッグしやすいです
+        st.error(f"解析エラー: {e}")
         return None, ""
 
 # --- サイドバー構成 ---
