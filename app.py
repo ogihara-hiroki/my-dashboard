@@ -85,12 +85,15 @@ def get_toggl_analysis(target_date_val, mode="日次"):
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
         headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
         
-        # ★修正：group_by を "description" に変更して作業内容別にする
+        # ★修正：descriptionで集計するための正しいパラメータ構成
         payload = {
             "start_date": start_date,
             "end_date": end_date,
             "group_by": "description",
-            "summary_setup": {"grouping": "descriptions"}
+            "summary_setup": {
+                "grouping": "projects", # ここは 'projects' または 'users' 固定というルールです
+                "sub_grouping": "descriptions" # 詳細に description を指定
+            }
         }
         
         res = requests.post(url, headers=headers, json=payload)
