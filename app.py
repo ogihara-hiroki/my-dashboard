@@ -71,34 +71,40 @@ def get_pc_analysis(target_date_val, mode="日次"):
 # --- 3. Togglからデータを取得する関数 (もっとも確実な生データ取得方式) ---
 def get_toggl_analysis(target_date_val, mode="日次"):
     try:
-        # 日付範囲（JST 00:00:00 〜 23:59:59）
+        # 日付を確実に "YYYY-MM-DD" 形式の文字列にする
         if mode == "日次":
-            start_dt = datetime.combine(target_date_val, datetime.min.time())
-            end_dt = datetime.combine(target_date_val, datetime.max.time())
+            # タイムゾーンの影響を避けるため、時刻を含めず日付のみ指定
+            start_date = target_date_val.strftime('%Y-%m-%d')
+            end_date = target_date_val.strftime('%Y-%m-%d')
         else:
             start_of_week = target_date_val - timedelta(days=target_date_val.weekday())
-            start_dt = datetime.combine(start_of_week, datetime.min.time())
-            end_dt = datetime.combine(start_of_week + timedelta(days=6), datetime.max.time())
+            end_of_week = start_of_week + timedelta(days=6)
+            start_date = start_of_week.strftime('%Y-%m-%d')
+            end_date = end_of_week.strftime('%Y-%m-%d')
 
-        # ISO形式文字列へ変換
-        start_date_str = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-        end_date_str = end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        # デバッグ用：実際に送る日付を画面に小さく出す（確認後消してOK）
+        # st.caption(f"Togglリクエスト範囲: {start_date} 〜 {end_date}")
 
-        # Toggl Detailed API (生データを取得してPython側で集計)
         url = f"https://api.track.toggl.com/reports/api/v3/workspace/{TOGGL_WORKSPACE_ID}/search/time_entries"
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
         headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
         
-        payload = {"start_date": start_date_str, "end_date": end_date_str}
+        # start_date と end_date だけをシンプルに送る
+        payload = {
+            "start_date": start_date,
+            "end_date": end_date
+        }
+        
         res = requests.post(url, headers=headers, json=payload)
         
         if res.status_code != 200:
+            # 180日エラーが出る場合は、ここに詳細が表示されます
+            st.error(f"Togglエラー: {res.text}")
             return None
         
         data = res.json()
         if not data: return None
         
-        # 生データを集計
         entries = []
         for item in data:
             desc = item.get('description') or "名称未設定"
@@ -110,7 +116,8 @@ def get_toggl_analysis(target_date_val, mode="日次"):
         df_res['時間(h)'] = df_res['時間(h)'].round(2)
         
         return df_res
-    except:
+    except Exception as e:
+        st.error(f"解析エラー: {e}")
         return None
 
 # --- サイドバー設定 ---
