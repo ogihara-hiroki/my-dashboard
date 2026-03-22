@@ -71,9 +71,7 @@ def get_pc_analysis(target_date_val, mode="日次"):
 # --- 3. Togglからデータを取得する関数 (もっとも確実な生データ取得方式) ---
 def get_toggl_analysis(target_date_val, mode="日次"):
     try:
-        # 日付を確実に "YYYY-MM-DD" 形式の文字列にする
         if mode == "日次":
-            # タイムゾーンの影響を避けるため、時刻を含めず日付のみ指定
             start_date = target_date_val.strftime('%Y-%m-%d')
             end_date = target_date_val.strftime('%Y-%m-%d')
         else:
@@ -82,24 +80,14 @@ def get_toggl_analysis(target_date_val, mode="日次"):
             start_date = start_of_week.strftime('%Y-%m-%d')
             end_date = end_of_week.strftime('%Y-%m-%d')
 
-        # デバッグ用：実際に送る日付を画面に小さく出す（確認後消してOK）
-        # st.caption(f"Togglリクエスト範囲: {start_date} 〜 {end_date}")
-
         url = f"https://api.track.toggl.com/reports/api/v3/workspace/{TOGGL_WORKSPACE_ID}/search/time_entries"
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
         headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
         
-        # start_date と end_date だけをシンプルに送る
-        payload = {
-            "start_date": start_date,
-            "end_date": end_date
-        }
-        
+        payload = {"start_date": start_date, "end_date": end_date}
         res = requests.post(url, headers=headers, json=payload)
         
         if res.status_code != 200:
-            # 180日エラーが出る場合は、ここに詳細が表示されます
-            st.error(f"Togglエラー: {res.text}")
             return None
         
         data = res.json()
@@ -108,12 +96,28 @@ def get_toggl_analysis(target_date_val, mode="日次"):
         entries = []
         for item in data:
             desc = item.get('description') or "名称未設定"
-            sec = item.get('seconds', 0)
-            entries.append({'作業内容': desc, '時間(h)': sec / 3600})
+            
+            # ★修正：Toggl API v3では「dur（ミリ秒）」で返る場合があるため、
+            # まず 'seconds' を探し、なければ 'dur' をミリ秒として計算する
+            sec = item.get('seconds')
+            if sec is None:
+                # durationが負の場合は「現在計測中」なので、0として扱うか除外する
+                dur = item.get('dur', 0)
+                sec = dur / 1000 if dur > 0 else 0
+            
+            # 秒数が正の場合のみ追加
+            if sec > 0:
+                entries.append({'作業内容': desc, '秒数': sec})
+        
+        if not entries: return None
         
         df = pd.DataFrame(entries)
-        df_res = df.groupby('作業内容')['時間(h)'].sum().reset_index()
-        df_res['時間(h)'] = df_res['時間(h)'].round(2)
+        # 作業内容ごとに秒数を合計してから、最後に時間に変換する
+        df_res = df.groupby('作業内容')['秒数'].sum().reset_index()
+        df_res['時間(h)'] = (df_res['秒数'] / 3600).round(2)
+        
+        # 不要な列を消して、時間の降順に並べる
+        df_res = df_res[['作業内容', '時間(h)']].sort_values('時間(h)', ascending=False)
         
         return df_res
     except Exception as e:
