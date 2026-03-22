@@ -72,7 +72,6 @@ def get_pc_analysis(target_date_val, mode="日次"):
 # --- 3. Togglからデータを取得する関数 (Summary API v3 最終仕様) ---
 def get_toggl_analysis(target_date_val, mode="日次"):
     try:
-        # 日付フォーマット設定
         if mode == "日次":
             start_date = target_date_val.strftime('%Y-%m-%d')
             end_date = target_date_val.strftime('%Y-%m-%d')
@@ -84,42 +83,36 @@ def get_toggl_analysis(target_date_val, mode="日次"):
 
         url = f"https://api.track.toggl.com/reports/api/v3/workspace/{TOGGL_WORKSPACE_ID}/summary/time_entries"
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
-        headers = {
-            "Authorization": f"Basic {auth}",
-            "Content-Type": "application/json"
-        }
+        headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
         
-        # ★ Toggl API v3 の必須パラメータをすべて網羅
+        # ★修正：group_by を "description" に変更して作業内容別にする
         payload = {
             "start_date": start_date,
             "end_date": end_date,
-            "group_by": "project",
-            "summary_setup": {
-                "grouping": "projects"
-            }
+            "group_by": "description",
+            "summary_setup": {"grouping": "descriptions"}
         }
         
         res = requests.post(url, headers=headers, json=payload)
-        
-        if res.status_code != 200:
-            st.error(f"Togglエラー詳細: {res.text}")
-            return None
+        if res.status_code != 200: return None
         
         report_data = res.json()
         entries = []
         for item in report_data:
-            # プロジェクト名と秒数を取得
-            project_info = item.get('title', {})
-            project_name = project_info.get('project') if project_info else 'なし'
-            if not project_name: project_name = 'なし'
+            # ★修正：プロジェクト名ではなく「説明文（description）」を取得
+            title_info = item.get('title')
+            task_name = "名称未設定"
+            if title_info and isinstance(title_info, dict):
+                task_name = title_info.get('description') or "名称未設定"
             
             duration_h = round(item.get('seconds', 0) / 3600, 2)
             if duration_h > 0:
-                entries.append({'プロジェクト': project_name, '時間(h)': duration_h})
+                # グラフのラベルも「作業内容」に変更
+                entries.append({'作業内容': task_name, '時間(h)': duration_h})
         
         return pd.DataFrame(entries) if entries else None
     except Exception as e:
-        st.error(f"接続エラー: {e}")
+        st.error(f"解析エラー: {e}")
         return None
 
 # --- メイン画面構成 ---
