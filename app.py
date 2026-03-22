@@ -70,7 +70,7 @@ def get_pc_analysis(target_date_val, mode="日次"):
 # --- 3. Togglからデータを取得する関数 (無料プラン対応・Summary方式) ---
 def get_toggl_analysis(target_date_val, mode="日次"):
     try:
-        # 日付文字列 (YYYY-MM-DD)
+        # 日付設定 (YYYY-MM-DD)
         if mode == "日次":
             start_date = target_date_val.strftime('%Y-%m-%d')
             end_date = target_date_val.strftime('%Y-%m-%d')
@@ -80,41 +80,44 @@ def get_toggl_analysis(target_date_val, mode="日次"):
             start_date = start_of_week.strftime('%Y-%m-%d')
             end_date = end_of_week.strftime('%Y-%m-%d')
 
-        # 無料版でも使える Summary エンドポイント
+        # 無料版で最も安全な Summary エンドポイント
         url = f"https://api.track.toggl.com/reports/api/v3/workspace/{TOGGL_WORKSPACE_ID}/summary/time_entries"
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
         headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
         
-        # 無料プランで「作業内容別」を取得するための最小限のパラメータ
+        # ★修正：402エラーを避けるため、sub_grouping を削除し、最も基本的な構造でリクエスト
         payload = {
             "start_date": start_date,
             "end_date": end_date,
-            "group_by": "user",  # 一旦 user でグループ化
-            "sub_grouping": "description" # その下を作業内容にする
+            "group_by": "project" # 無料プランで確実に通る指定
         }
         
         res = requests.post(url, headers=headers, json=payload)
         
         if res.status_code != 200:
-            st.error(f"Togglエラー: {res.status_code}")
+            # 402が出る場合は、ここでメッセージを表示
+            st.error(f"Toggl API Status: {res.status_code} - {res.text}")
             return None
         
         raw_data = res.json()
         entries = []
         
-        # Summary API の構造を解析
-        for group in raw_data:
-            for sub in group.get('sub_groups', []):
-                # 作業内容の名前と秒数を取得
-                desc = sub.get('title') or "名称未設定"
-                sec = sub.get('seconds', 0)
-                if sec > 0:
-                    entries.append({'作業内容': desc, '時間(h)': round(sec / 3600, 2)})
+        # Summary API のデフォルト構造（Projects -> seconds）を解析
+        for item in raw_data:
+            # プロジェクト名を取得（Descriptionが含まれていればそれを使用）
+            title_info = item.get('title', {})
+            # プロジェクト名、または詳細名を取得
+            name = title_info.get('project') or title_info.get('description') or "名称未設定"
+            
+            sec = item.get('seconds', 0)
+            if sec > 0:
+                entries.append({'作業内容': name, '時間(h)': round(sec / 3600, 2)})
         
-        if not entries: return None
-        
+        if not entries:
+            return None
+            
         df_res = pd.DataFrame(entries)
-        # 同じ作業内容があれば合算
+        # 同じ名前の項目があれば合算して整理
         df_res = df_res.groupby('作業内容')['時間(h)'].sum().reset_index()
         return df_res.sort_values('時間(h)', ascending=False)
         
