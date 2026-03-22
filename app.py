@@ -34,7 +34,6 @@ def update_github_status(status_text):
 def get_pc_analysis(target_date_val, mode="日次"):
     try:
         url = f"https://raw.githubusercontent.com/{REPO_NAME}/main/pc_usage_log.csv"
-        # 列名を明示的に指定して読み込み
         df_log = pd.read_csv(url, encoding='utf-8-sig', names=['timestamp', 'window_title'], header=None)
         df_log['timestamp'] = pd.to_datetime(df_log['timestamp'], errors='coerce')
         df_log = df_log.dropna(subset=['timestamp'])
@@ -63,13 +62,12 @@ def get_pc_analysis(target_date_val, mode="日次"):
         df_filtered['アプリ'] = df_filtered['window_title'].apply(detect_app)
         df_res = df_filtered['アプリ'].value_counts().reset_index()
         df_res.columns = ['アプリ', '合計時間(h)']
-        # 10秒間隔のログを時間に変換
         df_res['合計時間(h)'] = round(df_res['合計時間(h)'] * 10 / 3600, 2)
         return df_res, period_text
     except:
         return None, ""
 
-# --- 3. Togglからデータを取得する関数 (Summary API v3 最終仕様) ---
+# --- 3. Togglからデータを取得する関数 (名称/Description別集計版) ---
 def get_toggl_analysis(target_date_val, mode="日次"):
     try:
         if mode == "日次":
@@ -85,24 +83,26 @@ def get_toggl_analysis(target_date_val, mode="日次"):
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
         headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
         
-        # ★修正：descriptionで集計するための正しいパラメータ構成
+        # ★ここが重要：groupingは projects 固定で、詳細に descriptions を指定する
         payload = {
             "start_date": start_date,
             "end_date": end_date,
             "group_by": "description",
             "summary_setup": {
-                "grouping": "projects", # ここは 'projects' または 'users' 固定というルールです
-                "sub_grouping": "descriptions" # 詳細に description を指定
+                "grouping": "projects",
+                "sub_grouping": "descriptions"
             }
         }
         
         res = requests.post(url, headers=headers, json=payload)
-        if res.status_code != 200: return None
+        if res.status_code != 200:
+            st.error(f"Togglエラー詳細: {res.text}")
+            return None
         
         report_data = res.json()
         entries = []
         for item in report_data:
-            # ★修正：プロジェクト名ではなく「説明文（description）」を取得
+            # プロジェクトではなく description を取得
             title_info = item.get('title')
             task_name = "名称未設定"
             if title_info and isinstance(title_info, dict):
@@ -110,53 +110,55 @@ def get_toggl_analysis(target_date_val, mode="日次"):
             
             duration_h = round(item.get('seconds', 0) / 3600, 2)
             if duration_h > 0:
-                # グラフのラベルも「作業内容」に変更
                 entries.append({'作業内容': task_name, '時間(h)': duration_h})
         
         return pd.DataFrame(entries) if entries else None
     except Exception as e:
-        st.error(f"解析エラー: {e}")
+        st.error(f"データ解析エラー: {e}")
         return None
 
-# --- メイン画面構成 ---
+# --- サイドバー表示設定 ---
 st.sidebar.header("表示設定")
-analysis_mode = st.sidebar.radio("分析範囲:", ["日次", "週次"])
-target_date = st.sidebar.date_input("基準日:", date.today())
+analysis_mode = st.sidebar.radio("分析範囲を選択:", ["日次", "週次"])
+target_date = st.sidebar.date_input("日付を選択:", date.today())
 
 st.sidebar.markdown("---")
 st.sidebar.header("PCログリモコン")
-remote_on = st.sidebar.checkbox("PCログ記録を開始")
-if remote_on:
+if st.sidebar.checkbox("PCログ記録を開始"):
     update_github_status("ON")
     st.sidebar.success("指示を送信: ON")
 else:
     update_github_status("OFF")
     st.sidebar.warning("指示を送信: OFF")
 
-st.title(f"📊 業務分析ダッシュボード: {analysis_mode}")
+# --- メインエリア表示 ---
+st.title(f"📊 業務分析: {analysis_mode}")
 
 # A. PC操作ログセクション
 df_pc, period_text = get_pc_analysis(target_date, analysis_mode)
 if df_pc is not None:
     st.subheader(f"💻 PC操作ログの内訳 {period_text}")
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        st.plotly_chart(px.pie(df_pc, values='合計時間(h)', names='アプリ', hole=0.4), use_container_width=True)
-    with c2:
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        fig_pc = px.pie(df_pc, values='合計時間(h)', names='アプリ', hole=0.4)
+        st.plotly_chart(fig_pc, use_container_width=True)
+    with col2:
         st.table(df_pc)
 else:
     st.info(f"💡 {target_date} のPCログはありません。")
 
 st.markdown("---")
 
-# B. Toggl 作業記録セクション
+# B. Togglセクション (作業内容別)
 df_toggl = get_toggl_analysis(target_date, analysis_mode)
 if df_toggl is not None:
     st.subheader(f"⏱️ Toggl 作業記録 {analysis_mode}")
-    c3, c4 = st.columns([2, 1])
-    with c3:
-        st.plotly_chart(px.bar(df_toggl, x='プロジェクト', y='時間(h)', color='プロジェクト', text_auto=True), use_container_width=True)
-    with c4:
+    col3, col4 = st.columns([2, 1])
+    with col3:
+        # グラフの軸を '作業内容' に変更
+        fig_toggl = px.bar(df_toggl, x='作業内容', y='時間(h)', color='作業内容', text_auto=True)
+        st.plotly_chart(fig_toggl, use_container_width=True)
+    with col4:
         st.table(df_toggl)
 else:
     st.warning(f"⚠️ {target_date} の Toggl 記録が見つかりません。")
