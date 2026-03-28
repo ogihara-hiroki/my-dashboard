@@ -190,8 +190,56 @@ st.caption(f"Analyzing {analysis_mode} data for {target_date}")
 # Fetch Data
 df_pc, period_text = get_pc_analysis(target_date, analysis_mode)
 df_toggl = get_toggl_analysis(target_date, analysis_mode)
-    st.subheader(f"⏱️ Toggl 作業記録 {analysis_mode}")
-    c3, c4 = st.columns([2, 1])
-    with c3: st.plotly_chart(px.bar(df_toggl, x='作業内容', y='時間(h)', color='作業内容', text_auto=True), use_container_width=True)
-    with c4: st.table(df_toggl)
-else: st.warning(f"⚠️ {target_date} の Toggl 記録が見つかりません。")
+
+# Summary Metrics Layer
+m1, m2, m3 = st.columns(3)
+total_pc = df_pc['合計時間(h)'].sum() if df_pc is not None else 0
+total_toggl = df_toggl['時間(h)'].sum() if df_toggl is not None else 0
+gap = round(total_pc - total_toggl, 2)
+
+with m1:
+    st.metric("Total PC Active Time", f"{total_pc}h", delta=None)
+with m2:
+    st.metric("Total Toggl Tracked", f"{total_toggl}h", delta=None)
+with m3:
+    st.metric("Efficiency Gap", f"{gap}h", delta=f"{round(gap/total_pc*100, 1)}%" if total_pc > 0 else "0%", delta_color="inverse")
+
+# Detailed Analysis
+st.markdown("---")
+tab1, tab2 = st.tabs(["💻 PC Logs", "⏱️ Toggl Entries"])
+
+with tab1:
+    if df_pc is not None:
+        st.subheader(f"Internal Usage Breakdown {period_text}")
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            fig_pc = px.pie(
+                df_pc, values='合計時間(h)', names='アプリ', 
+                hole=0.6, color_discrete_sequence=px.colors.qualitative.Pastel
+            )
+            fig_pc.update_layout(margin=dict(t=0, b=0, l=0, r=0), showlegend=True)
+            st.plotly_chart(fig_pc, use_container_width=True)
+        with c2:
+            st.dataframe(df_pc, use_container_width=True, hide_index=True)
+    else:
+        st.info(f"No PC logs found for {target_date}.")
+
+with tab2:
+    if df_toggl is not None:
+        st.subheader(f"Manual Time Entries {analysis_mode}")
+        c3, c4 = st.columns([2, 1])
+        with c3:
+            fig_toggl = px.bar(
+                df_toggl, x='作業内容', y='時間(h)', color='作業内容', 
+                text_auto=True, color_discrete_sequence=px.colors.qualitative.Set2
+            )
+            fig_toggl.update_layout(margin=dict(t=0, b=0, l=0, r=0))
+            st.plotly_chart(fig_toggl, use_container_width=True)
+        with c4:
+            st.dataframe(df_toggl, use_container_width=True, hide_index=True)
+    else:
+        st.warning(f"No Toggl records found for {target_date}.")
+
+# Footer
+st.markdown("---")
+st.caption("Powered by Streamlit & Toggl API | Made for efficiency.")
