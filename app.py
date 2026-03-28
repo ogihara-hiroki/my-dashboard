@@ -1,41 +1,72 @@
 import streamlit as st
-import requests, base64, pandas as pd
+import requests
+import base64
+import pandas as pd
 import plotly.express as px
 from datetime import datetime, date, timedelta
 import urllib3
 
-# SSL警告を非表示にする
+# --- ⚙️ Configuration ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- 設定 ---
-GITHUB_TOKEN = st.secrets["MY_GITHUB_TOKEN"]
-REPO_NAME = 'ogihara-hiroki/my-dashboard'
+# Constants & Secrets
+GITHUB_TOKEN = st.secrets.get("MY_GITHUB_TOKEN", "REPLACE_ME")
+REPO_NAME = st.secrets.get("REPO_NAME", 'ogihara-hiroki/my-dashboard')
 STATUS_FILE = 'status.txt'
-TOGGL_TOKEN = '2236bb0c27861b351b5546732733043e'
-TOGGL_WORKSPACE_ID = '8358873'
+TOGGL_TOKEN = st.secrets.get("TOGGL_TOKEN", "REPLACE_ME")
+TOGGL_WORKSPACE_ID = st.secrets.get("TOGGL_WORKSPACE_ID", "REPLACE_ME")
 
-st.set_page_config(page_title="Work Analysis Pro", layout="wide")
+# Log sampling interval (seconds)
+SAMPLING_INTERVAL = 10 
 
-# --- 1. GitHubリモコン ---
+APP_CATEGORIES = {
+    'Automation Studio (設計)': ['automation studio'],
+    'IDE (開発)': ['visual studio', 'vscode', 'intellij', 'pycharm', 'cursor'],
+    'Excel (作業/資料)': ['excel'],
+    'ブラウザ (調査/メール)': ['chrome', 'edge', 'firefox', 'safari'],
+    'フォルダ (探す無駄)': ['エクスプローラー', 'folder', 'finder'],
+    'コミュニケーション': ['slack', 'teams', 'zoom', 'discord', 'line'],
+    'その他': []
+}
+
+st.set_page_config(
+    page_title="Work Analysis Pro",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# --- 🛠️ Logic ---
+
 def update_github_status(status_text):
+    """Updates the status.txt file on GitHub to control remote logging."""
+    if GITHUB_TOKEN == "REPLACE_ME":
+        return
     try:
         url = f"https://api.github.com/repos/{REPO_NAME}/contents/{STATUS_FILE}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}"}
         res = requests.get(url, headers=headers).json()
-        if 'sha' not in res: return
+        if 'sha' not in res:
+            return
+        
         sha = res['sha']
         content = base64.b64encode(status_text.encode('utf-8')).decode('utf-8')
         data = {"message": f"Switch to {status_text}", "content": content, "sha": sha}
-        requests.put(url, headers=headers, json=data)
-    except: pass
+        res_put = requests.put(url, headers=headers, json=data)
+        if res_put.status_code == 200:
+            st.toast(f"GitHub Status Updated: {status_text}", icon="✅")
+    except Exception as e:
+        st.error(f"GitHub Update Failed: {e}")
 
-# --- 2. PCログ解析 ---
+@st.cache_data(ttl=600)
 def get_pc_analysis(target_date_val, mode="日次"):
+    """Fetches and analyzes PC usage logs from GitHub."""
     try:
         url = f"https://raw.githubusercontent.com/{REPO_NAME}/main/pc_usage_log.csv"
         df_log = pd.read_csv(url, encoding='utf-8-sig', names=['timestamp', 'window_title'], header=None)
         df_log['timestamp'] = pd.to_datetime(df_log['timestamp'], errors='coerce')
         df_log = df_log.dropna(subset=['timestamp'])
+        
         if mode == "日次":
             df_filtered = df_log[df_log['timestamp'].dt.date == target_date_val].copy()
             period_text = f"({target_date_val})"
@@ -44,25 +75,31 @@ def get_pc_analysis(target_date_val, mode="日次"):
             end_of_week = start_of_week + timedelta(days=6)
             df_filtered = df_log[(df_log['timestamp'].dt.date >= start_of_week) & (df_log['timestamp'].dt.date <= end_of_week)].copy()
             period_text = f"({start_of_week} 〜 {end_of_week})"
-        if df_filtered.empty: return None, period_text
+            
+        if df_filtered.empty:
+            return None, period_text
+            
         def detect_app(title):
             title = str(title).lower()
-            if 'automation studio' in title: return 'Automation Studio (設計)'
-            if 'visual studio' in title or 'vscode' in title: return 'IDE (開発)'
-            if 'excel' in title: return 'Excel (作業/資料)'
-            if 'chrome' in title or 'edge' in title: return 'ブラウザ (調査/メール)'
-            if 'エクスプローラー' in title or 'folder' in title: return 'フォルダ (探す無駄)'
+            for cat, keywords in APP_CATEGORIES.items():
+                if any(kw in title for kw in keywords):
+                    return cat
             return 'その他'
+            
         df_filtered['アプリ'] = df_filtered['window_title'].apply(detect_app)
         df_res = df_filtered['アプリ'].value_counts().reset_index()
         df_res.columns = ['アプリ', '合計時間(h)']
-        df_res['合計時間(h)'] = round(df_res['合計時間(h)'] * 10 / 3600, 2)
+        # Convert sampling counts to hours
+        df_res['合計時間(h)'] = round(df_res['合計時間(h)'] * SAMPLING_INTERVAL / 3600, 2)
         return df_res, period_text
-    except: return None, ""
+    except Exception as e:
+        return None, ""
 
-# --- 3. Toggl解析 (無料プラン完全準拠) ---
-@st.cache_data(ttl=300) # 5分間はAPIを叩かずキャッシュを使う（制限対策）
+@st.cache_data(ttl=300)
 def get_toggl_analysis(target_date_val, mode="日次"):
+    """Fetches time entries from Toggl Track API v3."""
+    if TOGGL_TOKEN == "REPLACE_ME":
+        return None
     try:
         if mode == "日次":
             start_date, end_date = target_date_val.strftime('%Y-%m-%d'), target_date_val.strftime('%Y-%m-%d')
@@ -75,56 +112,84 @@ def get_toggl_analysis(target_date_val, mode="日次"):
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
         headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
         
-        # 無料プランで最も安全な payload
         payload = {"start_date": start_date, "end_date": end_date}
         res = requests.post(url, headers=headers, json=payload)
         
         if res.status_code != 200:
-            if res.status_code == 402: st.error("Toggl制限中: しばらくお待ちください")
+            if res.status_code == 402:
+                st.warning("Toggl API limit reached (402). Using cached data.")
+            elif res.status_code == 401:
+                st.error("Toggl Authentication failed. Check your token.")
             return None
         
         raw_data = res.json()
         entries = []
         for item in raw_data:
             title_info = item.get('title', {})
-            # title内から名称を柔軟に取得
             name = title_info.get('description') or title_info.get('project') or "名称未設定"
             sec = item.get('seconds', 0)
-            if sec > 0: entries.append({'作業内容': name, '時間(h)': round(sec / 3600, 2)})
+            if sec > 0:
+                entries.append({'作業内容': name, '時間(h)': round(sec / 3600, 2)})
         
-        if not entries: return None
+        if not entries:
+            return None
+            
         df = pd.DataFrame(entries).groupby('作業内容')['時間(h)'].sum().reset_index()
         return df.sort_values('時間(h)', ascending=False)
-    except: return None
+    except Exception as e:
+        st.error(f"Toggl Fetch Error: {e}")
+        return None
 
-# --- UI ---
-st.sidebar.header("表示設定")
-analysis_mode = st.sidebar.radio("分析範囲:", ["日次", "週次"])
-target_date = st.sidebar.date_input("基準日:", date.today())
+# --- 🎨 UI Components ---
 
-st.sidebar.markdown("---")
-st.sidebar.header("PCログリモコン")
-if st.sidebar.checkbox("PCログ記録を開始"):
-    update_github_status("ON")
-    st.sidebar.success("指示を送信: ON")
-else:
-    update_github_status("OFF")
-    st.sidebar.warning("指示を送信: OFF")
+# Custom CSS for Premium Look
+st.markdown("""
+<style>
+    .main {
+        background: linear-gradient(135deg, #1e1e2f 0%, #2d2d44 100%);
+        color: #ffffff;
+    }
+    .stMetric {
+        background: rgba(255, 255, 255, 0.05);
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(5px);
+    }
+    .stTable {
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 10px;
+    }
+    h1, h2, h3 {
+        color: #00d2ff !important;
+        font-family: 'Inter', sans-serif;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-st.title(f"📊 業務分析: {analysis_mode}")
+# Sidebar
+with st.sidebar:
+    st.header("📊 Settings")
+    analysis_mode = st.radio("Range:", ["日次", "週次"])
+    target_date = st.date_input("Target Date:", date.today())
+    
+    st.markdown("---")
+    st.header("🎮 Remote Control")
+    is_logging = st.checkbox("Enable PC Tracking", help="Triggers the remote logger via GitHub")
+    if is_logging:
+        update_github_status("ON")
+        st.success("Remote: ON")
+    else:
+        update_github_status("OFF")
+        st.warning("Remote: OFF")
 
+# Main Content
+st.title(f"🚀 Work Analysis Pro")
+st.caption(f"Analyzing {analysis_mode} data for {target_date}")
+
+# Fetch Data
 df_pc, period_text = get_pc_analysis(target_date, analysis_mode)
-if df_pc is not None:
-    st.subheader(f"💻 PC操作ログの内訳 {period_text}")
-    c1, c2 = st.columns([2, 1])
-    with c1: st.plotly_chart(px.pie(df_pc, values='合計時間(h)', names='アプリ', hole=0.4), use_container_width=True)
-    with c2: st.table(df_pc)
-else: st.info(f"💡 {target_date} のPCログはありません。")
-
-st.markdown("---")
-
 df_toggl = get_toggl_analysis(target_date, analysis_mode)
-if df_toggl is not None:
     st.subheader(f"⏱️ Toggl 作業記録 {analysis_mode}")
     c3, c4 = st.columns([2, 1])
     with c3: st.plotly_chart(px.bar(df_toggl, x='作業内容', y='時間(h)', color='作業内容', text_auto=True), use_container_width=True)
