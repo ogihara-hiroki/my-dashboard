@@ -61,28 +61,27 @@ def get_asana_plan(target_date_val):
         return pd.DataFrame(plan_data) if plan_data else None
     except: return None
 
-# --- 3. Togglから実績(Do)を取得 (時差・無料プラン対応版) ---
+# --- 3. Togglから実績(Do)を取得 (日付形式・無料プラン最適化版) ---
 @st.cache_data(ttl=300)
 def get_toggl_do(target_date_val, mode="日次"):
     try:
-        # 日本時間の 00:00:00 と 23:59:59 を作成
+        # Toggl Summary API v3 が唯一受け付ける "YYYY-MM-DD" 形式に修正
         if mode == "日次":
-            start_dt = datetime.combine(target_date_val, datetime.min.time())
-            end_dt = datetime.combine(target_date_val, datetime.max.time())
+            start_str = target_date_val.strftime('%Y-%m-%d')
+            end_str = target_date_val.strftime('%Y-%m-%d')
         else:
             start_of_week = target_date_val - timedelta(days=target_date_val.weekday())
-            start_dt = datetime.combine(start_of_week, datetime.min.time())
-            end_dt = datetime.combine(start_of_week + timedelta(days=6), datetime.max.time())
-
-        # Toggl v3 が最も正確に認識する ISO8601 形式 (例: 2026-04-03T00:00:00Z)
-        start_str = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-        end_str = end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+            start_str = start_of_week.strftime('%Y-%m-%d')
+            end_str = (start_of_week + timedelta(days=6)).strftime('%Y-%m-%d')
 
         url = f"https://api.track.toggl.com/reports/api/v3/workspace/{TOGGL_WORKSPACE_ID}/summary/time_entries"
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
-        headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Basic {auth}",
+            "Content-Type": "application/json"
+        }
         
-        # タイムゾーンのズレを防ぐため、時刻を含めた範囲でリクエスト
+        # 不要なパラメータを削ぎ落とした、無料プラン用の最小構成
         payload = {
             "start_date": start_str,
             "end_date": end_str
@@ -91,23 +90,29 @@ def get_toggl_do(target_date_val, mode="日次"):
         res = requests.post(url, headers=headers, json=payload)
         
         if res.status_code != 200:
-            # 402エラーなどが出た場合にデバッグしやすくします
+            # 400エラーが再発しないよう、ここで詳細を確認可能にします
             st.error(f"Togglエラー ({res.status_code}): {res.text}")
             return None
         
+        raw_data = res.json()
         entries = []
-        for group in res.json():
-            # 無料プランでは sub_groups 内に詳細（description）が入ります
-            for sub in group.get('sub_groups', []):
-                desc = sub.get('title') or "名称未設定"
-                sec = sub.get('seconds', 0)
+        
+        # Togglのレスポンス構造（Project -> Description）を丁寧に辿る
+        for project_group in raw_data:
+            for sub_group in project_group.get('sub_groups', []):
+                # 作業内容（Description）を取得
+                desc = sub_group.get('title') or "名称未設定"
+                sec = sub_group.get('seconds', 0)
                 if sec > 0:
                     entries.append({'作業内容': desc, '実績(h)': round(sec / 3600, 2)})
         
         if not entries:
             return None
             
-        return pd.DataFrame(entries).groupby('作業内容')['実績(h)'].sum().reset_index()
+        # 同じ名前の作業を合計して整理
+        df_res = pd.DataFrame(entries).groupby('作業内容')['実績(h)'].sum().reset_index()
+        return df_res.sort_values('実績(h)', ascending=False)
+        
     except Exception as e:
         st.error(f"Toggl取得中に例外が発生しました: {e}")
         return None
