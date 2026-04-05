@@ -61,11 +61,11 @@ def get_asana_plan(target_date_val):
         return pd.DataFrame(plan_data) if plan_data else None
     except: return None
 
-# --- 3. Togglから実績(Do)を取得 (日付形式・無料プラン最適化版) ---
+# --- 3. Togglから実績(Do)を取得 (完全安定版) ---
 @st.cache_data(ttl=300)
 def get_toggl_do(target_date_val, mode="日次"):
     try:
-        # Toggl Summary API v3 が唯一受け付ける "YYYY-MM-DD" 形式に修正
+        # 日付形式を YYYY-MM-DD に統一
         if mode == "日次":
             start_str = target_date_val.strftime('%Y-%m-%d')
             end_str = target_date_val.strftime('%Y-%m-%d')
@@ -76,45 +76,45 @@ def get_toggl_do(target_date_val, mode="日次"):
 
         url = f"https://api.track.toggl.com/reports/api/v3/workspace/{TOGGL_WORKSPACE_ID}/summary/time_entries"
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
-        headers = {
-            "Authorization": f"Basic {auth}",
-            "Content-Type": "application/json"
-        }
+        headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
         
-        # 不要なパラメータを削ぎ落とした、無料プラン用の最小構成
+        # ★修正：無料プランでエラー（'str' object...）を回避するための必須パラメータ
         payload = {
             "start_date": start_str,
-            "end_date": end_str
+            "end_date": end_str,
+            "group_by": "project"  # プロジェクト別に集計するよう明示
         }
         
         res = requests.post(url, headers=headers, json=payload)
         
+        # 通信失敗時の処理
         if res.status_code != 200:
-            # 400エラーが再発しないよう、ここで詳細を確認可能にします
-            st.error(f"Togglエラー ({res.status_code}): {res.text}")
             return None
         
         raw_data = res.json()
-        entries = []
         
-        # Togglのレスポンス構造（Project -> Description）を丁寧に辿る
-        for project_group in raw_data:
-            for sub_group in project_group.get('sub_groups', []):
-                # 作業内容（Description）を取得
-                desc = sub_group.get('title') or "名称未設定"
-                sec = sub_group.get('seconds', 0)
+        # もしデータがリスト形式でなければ（エラー文字列なら）終了
+        if not isinstance(raw_data, list):
+            return None
+            
+        entries = []
+        for project_item in raw_data:
+            # プロジェクトの下にある具体的な作業内容（sub_groups）をループ
+            for sub in project_item.get('sub_groups', []):
+                desc = sub.get('title') or "名称未設定"
+                sec = sub.get('seconds', 0)
                 if sec > 0:
                     entries.append({'作業内容': desc, '実績(h)': round(sec / 3600, 2)})
         
         if not entries:
             return None
             
-        # 同じ名前の作業を合計して整理
-        df_res = pd.DataFrame(entries).groupby('作業内容')['実績(h)'].sum().reset_index()
-        return df_res.sort_values('実績(h)', ascending=False)
+        df = pd.DataFrame(entries)
+        return df.groupby('作業内容')['実績(h)'].sum().reset_index()
         
     except Exception as e:
-        st.error(f"Toggl取得中に例外が発生しました: {e}")
+        # エラー発生時は内容を表示
+        st.error(f"Toggl取得エラー: {e}")
         return None
 
 # --- 4. PC操作ログ (Check/事実) ---
