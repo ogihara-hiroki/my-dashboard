@@ -61,11 +61,11 @@ def get_asana_plan(target_date_val):
         return pd.DataFrame(plan_data) if plan_data else None
     except: return None
 
-# --- 3. Togglから実績(Do)を取得 (完全安定版) ---
+# --- 3. Togglから実績(Do)を取得 (Search API / 生データ取得方式) ---
 @st.cache_data(ttl=300)
 def get_toggl_do(target_date_val, mode="日次"):
     try:
-        # 日付形式を YYYY-MM-DD に統一
+        # 日付範囲の設定
         if mode == "日次":
             start_str = target_date_val.strftime('%Y-%m-%d')
             end_str = target_date_val.strftime('%Y-%m-%d')
@@ -74,46 +74,48 @@ def get_toggl_do(target_date_val, mode="日次"):
             start_str = start_of_week.strftime('%Y-%m-%d')
             end_str = (start_of_week + timedelta(days=6)).strftime('%Y-%m-%d')
 
-        url = f"https://api.track.toggl.com/reports/api/v3/workspace/{TOGGL_WORKSPACE_ID}/summary/time_entries"
+        # Summary API ではなく Search API を使用 (生データを取得)
+        url = f"https://api.track.toggl.com/reports/api/v3/workspace/{TOGGL_WORKSPACE_ID}/search/time_entries"
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
         headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
         
-        # ★修正：無料プランでエラー（'str' object...）を回避するための必須パラメータ
+        # 複雑な集計指示をせず、ただ日付だけを指定
         payload = {
             "start_date": start_str,
-            "end_date": end_str,
-            "group_by": "project"  # プロジェクト別に集計するよう明示
+            "end_date": end_str
         }
         
         res = requests.post(url, headers=headers, json=payload)
         
-        # 通信失敗時の処理
         if res.status_code != 200:
             return None
         
         raw_data = res.json()
         
-        # もしデータがリスト形式でなければ（エラー文字列なら）終了
-        if not isinstance(raw_data, list):
+        # 生データのリストを解析
+        if not isinstance(raw_data, list) or len(raw_data) == 0:
             return None
             
         entries = []
-        for project_item in raw_data:
-            # プロジェクトの下にある具体的な作業内容（sub_groups）をループ
-            for sub in project_item.get('sub_groups', []):
-                desc = sub.get('title') or "名称未設定"
-                sec = sub.get('seconds', 0)
-                if sec > 0:
-                    entries.append({'作業内容': desc, '実績(h)': round(sec / 3600, 2)})
+        for item in raw_data:
+            # 入力した名前 (description) を取得
+            desc = item.get('description') or "名称未設定"
+            # 秒数を取得 (durはミリ秒なので1000で割る)
+            dur_ms = item.get('dur', 0)
+            if dur_ms > 0:
+                entries.append({'作業内容': desc, 'sec': dur_ms / 1000})
         
         if not entries:
             return None
             
+        # pandas で作業内容ごとに合計
         df = pd.DataFrame(entries)
-        return df.groupby('作業内容')['実績(h)'].sum().reset_index()
+        df_res = df.groupby('作業内容')['sec'].sum().reset_index()
+        df_res['実績(h)'] = (df_res['sec'] / 3600).round(2)
+        
+        return df_res[['作業内容', '実績(h)']].sort_values('実績(h)', ascending=False)
         
     except Exception as e:
-        # エラー発生時は内容を表示
         st.error(f"Toggl取得エラー: {e}")
         return None
 
