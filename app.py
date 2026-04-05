@@ -81,9 +81,11 @@ def get_toggl_do(target_date_val, mode="日次"):
             if dur > 0:
                 # ★修正：小数点第1位に丸める
                 entries.append({'作業内容': desc, '実績(h)': round(dur / 3600, 1)})
-        
-        if not entries: return None
+         
         df = pd.DataFrame(entries).groupby('作業内容')['実績(h)'].sum().reset_index()
+        
+        # ★修正：実績(h)の大きい順に並べ替える
+        df = df.sort_values('実績(h)', ascending=False)
         return df
     except Exception as e:
         st.error(f"Togglエラー: {e}")
@@ -112,9 +114,12 @@ if df_do is not None:
     
     c1, c2 = st.columns([2, 1])
     with c1:
-        # グラフ上の数値ラベルもスッキリ表示されます
-        st.plotly_chart(px.bar(df_merge, x="作業内容", y=["予定(h)", "実績(h)"], 
-                               barmode="group", text_auto='.1f'), use_container_width=True)
+        # category_orders を指定して、df の並び順（実績順）をグラフに反映させる
+        fig = px.bar(df_merge, x="作業内容", y=["予定(h)", "実績(h)"], 
+                     barmode="group", text_auto='.1f',
+                     category_orders={"作業内容": df_merge["作業内容"].tolist()})
+        st.plotly_chart(fig, use_container_width=True)
+        
     with c2:
         st.write("📊 予実詳細（h）")
         # 表の表示も第1位までに制限
