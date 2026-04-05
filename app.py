@@ -78,8 +78,9 @@ def get_toggl_do(target_date_val, mode="日次"):
         for item in raw_data:
             desc = item.get('description') or "名称未設定"
             dur = item.get('duration', 0)
-            if dur > 0: # 計測中(負の値)を除外
-                entries.append({'作業内容': desc, '実績(h)': round(dur / 3600, 2)})
+            if dur > 0:
+                # ★修正：小数点第1位に丸める
+                entries.append({'作業内容': desc, '実績(h)': round(dur / 3600, 1)})
         
         if not entries: return None
         df = pd.DataFrame(entries).groupby('作業内容')['実績(h)'].sum().reset_index()
@@ -106,12 +107,17 @@ if df_do is not None:
         df_merge = df_do.copy()
         df_merge["予定(h)"] = 0
     
-    df_merge['差分(h)'] = (df_merge['実績(h)'] - df_merge['予定(h)']).round(2)
+   # 差分計算も小数点第1位に
+    df_merge['差分(h)'] = (df_merge['実績(h)'] - df_merge['予定(h)']).round(1)
     
     c1, c2 = st.columns([2, 1])
     with c1:
-        st.plotly_chart(px.bar(df_merge, x="作業内容", y=["予定(h)", "実績(h)"], barmode="group"), use_container_width=True)
+        # グラフ上の数値ラベルもスッキリ表示されます
+        st.plotly_chart(px.bar(df_merge, x="作業内容", y=["予定(h)", "実績(h)"], 
+                               barmode="group", text_auto='.1f'), use_container_width=True)
     with c2:
-        st.table(df_merge)
+        st.write("📊 予実詳細（h）")
+        # 表の表示も第1位までに制限
+        st.table(df_merge.style.format("{:.1f}", subset=["予定(h)", "実績(h)", "差分(h)"]))
 else:
     st.warning(f"⚠️ {target_date} の Toggl 記録が見つかりません。")
