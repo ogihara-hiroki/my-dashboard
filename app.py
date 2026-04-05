@@ -132,35 +132,35 @@ df_do = get_toggl_do(target_date, analysis_mode)
 df_pc = get_pc_log(target_date, analysis_mode)
 
 # --- PDCA 振り返りセクション (Check) ---
-st.header("🔍 予定 vs 実績 (Plan vs Do)")
-if df_plan is not None and df_do is not None:
-    # データを結合
-    df_merge = pd.merge(df_plan, df_do, on="作業内容", how="outer").fillna(0)
+st.header("🔍 予実分析 (Plan vs Do)")
+
+# Asanaの予定がない場合でも、Togglの実績をベースに表を作る
+if df_do is not None:
+    if df_plan is not None:
+        # 両方ある場合は結合
+        df_merge = pd.merge(df_plan, df_do, on="作業内容", how="outer").fillna(0)
+    else:
+        # Asanaがない場合は実績のみで表を作る
+        df_merge = df_do.copy()
+        df_merge["予定(h)"] = 0
+        df_merge = df_merge[["作業内容", "予定(h)", "実績(h)"]]
+
     df_merge['差分(h)'] = df_merge['実績(h)'] - df_merge['予定(h)']
     
     col1, col2 = st.columns([2, 1])
     with col1:
-        fig = px.bar(df_merge, x="作業内容", y=["予定(h)", "実績(h)"], barmode="group", title="作業時間比較")
+        # 予定と実績を並べて表示
+        fig = px.bar(df_merge, x="作業内容", y=["予定(h)", "実績(h)"], barmode="group", 
+                     title=f"{target_date} の作業実績")
         st.plotly_chart(fig, use_container_width=True)
     with col2:
-        st.write("📈 予実詳細")
+        st.write("📊 予実詳細データ")
         st.table(df_merge)
     
-    # 改善アクションの示唆 (Act)
-    st.info("💡 **Actのヒント:** 実績が予定を大幅に超えたタスクは、Asanaにその理由（割り込みがあった、難易度が高かった等）をメモし、次回の予定時間を調整しましょう。")
+    # 改善アクションのアドバイス (Act)
+    if df_plan is None:
+        st.warning("💡 **Actのヒント:** Togglの記録はありますが、Asanaに本日の予定が見つかりませんでした。朝一番にAsanaで「予定（Plan）」を立てることで、より正確なPDCAが回せます。")
+    else:
+        st.info("💡 **Actのヒント:** 実績が予定を超えたものは、Asanaに理由をメモしておきましょう。")
 else:
-    st.warning("⚠️ 比較データが足りません（Asanaの期限設定かTogglの記録を確認してください）")
-
-st.markdown("---")
-
-# --- 客観的事実の確認 ---
-st.header("💻 PCログの事実確認")
-if df_pc is not None:
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        st.plotly_chart(px.pie(df_pc, values='時間(h)', names='アプリ', hole=0.4), use_container_width=True)
-    with c2:
-        st.write("ログから見える「集中度」")
-        st.dataframe(df_pc, use_container_width=True)
-else:
-    st.info("PCログがありません。")
+    st.warning("⚠️ Togglの記録が見つかりません。")
