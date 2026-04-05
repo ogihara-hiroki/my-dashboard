@@ -103,15 +103,18 @@ df_do = get_toggl_do(target_date)
 st.header("🔍 予実分析 (Plan vs Do)")
 
 if df_do is not None:
-    if df_plan is not None:
+if df_plan is not None:
         df_merge = pd.merge(df_plan, df_do, on="作業内容", how="outer").fillna(0)
     else:
         df_merge = df_do.copy()
         df_merge["予定(h)"] = 0
     
-   # 差分計算も小数点第1位に
+    # 差分計算
     df_merge['差分(h)'] = (df_merge['実績(h)'] - df_merge['予定(h)']).round(1)
-    
+
+    # ★ここに追加：結合後のデータフレームを「実績(h)」の大きい順に並び替える
+    df_merge = df_merge.sort_values('実績(h)', ascending=False)
+        
     c1, c2 = st.columns([2, 1])
     with c1:
         # category_orders を指定して、df の並び順（実績順）をグラフに反映させる
