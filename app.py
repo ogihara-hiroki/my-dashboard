@@ -13,10 +13,12 @@ REPO_NAME = 'ogihara-hiroki/my-dashboard'
 STATUS_FILE = 'status.txt'
 TOGGL_TOKEN = '2236bb0c27861b351b5546732733043e'
 TOGGL_WORKSPACE_ID = '8358873'
+ASANA_TOKEN = '2/1202260582260384/1213620305884302:3b2113ab646543840f0e4192076e7c08'
+ASANA_WORKSPACE_ID = '1200313649553191'
 
-st.set_page_config(page_title="Work Analysis Pro", layout="wide")
+st.set_page_config(page_title="Work PDCA Dashboard", layout="wide")
 
-# --- 1. GitHubリモコン ---
+# --- 1. GitHubリモコン (Action) ---
 def update_github_status(status_text):
     try:
         url = f"https://api.github.com/repos/{REPO_NAME}/contents/{STATUS_FILE}"
@@ -29,104 +31,136 @@ def update_github_status(status_text):
         requests.put(url, headers=headers, json=data)
     except: pass
 
-# --- 2. PCログ解析 ---
-def get_pc_analysis(target_date_val, mode="日次"):
+# --- 2. Asanaから予定(Plan)を取得 ---
+@st.cache_data(ttl=300)
+def get_asana_plan(target_date_val):
     try:
-        url = f"https://raw.githubusercontent.com/{REPO_NAME}/main/pc_usage_log.csv"
-        df_log = pd.read_csv(url, encoding='utf-8-sig', names=['timestamp', 'window_title'], header=None)
-        df_log['timestamp'] = pd.to_datetime(df_log['timestamp'], errors='coerce')
-        df_log = df_log.dropna(subset=['timestamp'])
-        if mode == "日次":
-            df_filtered = df_log[df_log['timestamp'].dt.date == target_date_val].copy()
-            period_text = f"({target_date_val})"
-        else:
-            start_of_week = target_date_val - timedelta(days=target_date_val.weekday())
-            end_of_week = start_of_week + timedelta(days=6)
-            df_filtered = df_log[(df_log['timestamp'].dt.date >= start_of_week) & (df_log['timestamp'].dt.date <= end_of_week)].copy()
-            period_text = f"({start_of_week} 〜 {end_of_week})"
-        if df_filtered.empty: return None, period_text
-        def detect_app(title):
-            title = str(title).lower()
-            if 'automation studio' in title: return 'Automation Studio (設計)'
-            if 'visual studio' in title or 'vscode' in title: return 'IDE (開発)'
-            if 'excel' in title: return 'Excel (作業/資料)'
-            if 'chrome' in title or 'edge' in title: return 'ブラウザ (調査/メール)'
-            if 'エクスプローラー' in title or 'folder' in title: return 'フォルダ (探す無駄)'
-            return 'その他'
-        df_filtered['アプリ'] = df_filtered['window_title'].apply(detect_app)
-        df_res = df_filtered['アプリ'].value_counts().reset_index()
-        df_res.columns = ['アプリ', '合計時間(h)']
-        df_res['合計時間(h)'] = round(df_res['合計時間(h)'] * 10 / 3600, 2)
-        return df_res, period_text
-    except: return None, ""
+        # 基準日が期限のタスクを取得
+        url = "https://app.asana.com/api/1.0/tasks"
+        headers = {"Authorization": f"Bearer {ASANA_TOKEN}"}
+        params = {
+            "workspace": ASANA_WORKSPACE_ID,
+            "assignee": "me",
+            "opt_fields": "name,due_on,custom_fields"
+        }
+        res = requests.get(url, headers=headers, params=params)
+        if res.status_code != 200: return None
+        
+        tasks = res.json().get('data', [])
+        plan_data = []
+        for t in tasks:
+            # 期限が選択日と一致するか（または期限未設定も一旦出す）
+            if t.get('due_on') == target_date_val.strftime('%Y-%m-%d'):
+                # 予定時間(カスタムフィールド)を探すロジック（適宜ID調整が必要）
+                estimate = 0
+                for cf in t.get('custom_fields', []):
+                    if '予定' in cf.get('name', '') or 'Estimate' in cf.get('name', ''):
+                        estimate = cf.get('number_value') or 0
+                
+                plan_data.append({"作業内容": t['name'], "予定(h)": estimate})
+        return pd.DataFrame(plan_data) if plan_data else None
+    except: return None
 
-# --- 3. Toggl解析 (無料プラン完全準拠) ---
-@st.cache_data(ttl=300) # 5分間はAPIを叩かずキャッシュを使う（制限対策）
-def get_toggl_analysis(target_date_val, mode="日次"):
+# --- 3. Togglから実績(Do)を取得 ---
+@st.cache_data(ttl=300)
+def get_toggl_do(target_date_val, mode="日次"):
     try:
         if mode == "日次":
-            start_date, end_date = target_date_val.strftime('%Y-%m-%d'), target_date_val.strftime('%Y-%m-%d')
+            start, end = target_date_val.strftime('%Y-%m-%d'), target_date_val.strftime('%Y-%m-%d')
         else:
             start_of_week = target_date_val - timedelta(days=target_date_val.weekday())
-            start_date = start_of_week.strftime('%Y-%m-%d')
-            end_date = (start_of_week + timedelta(days=6)).strftime('%Y-%m-%d')
+            start, end = start_of_week.strftime('%Y-%m-%d'), (start_of_week + timedelta(days=6)).strftime('%Y-%m-%d')
 
         url = f"https://api.track.toggl.com/reports/api/v3/workspace/{TOGGL_WORKSPACE_ID}/summary/time_entries"
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
         headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
-        
-        # 無料プランで最も安全な payload
-        payload = {"start_date": start_date, "end_date": end_date}
+        payload = {"start_date": start, "end_date": end}
         res = requests.post(url, headers=headers, json=payload)
         
-        if res.status_code != 200:
-            if res.status_code == 402: st.error("Toggl制限中: しばらくお待ちください")
-            return None
+        if res.status_code != 200: return None
         
-        raw_data = res.json()
         entries = []
-        for item in raw_data:
-            title_info = item.get('title', {})
-            # title内から名称を柔軟に取得
-            name = title_info.get('description') or title_info.get('project') or "名称未設定"
-            sec = item.get('seconds', 0)
-            if sec > 0: entries.append({'作業内容': name, '時間(h)': round(sec / 3600, 2)})
+        for group in res.json():
+            for sub in group.get('sub_groups', []):
+                desc = sub.get('title') or "名称未設定"
+                sec = sub.get('seconds', 0)
+                if sec > 0: entries.append({'作業内容': desc, '実績(h)': round(sec / 3600, 2)})
         
         if not entries: return None
-        df = pd.DataFrame(entries).groupby('作業内容')['時間(h)'].sum().reset_index()
-        return df.sort_values('時間(h)', ascending=False)
+        return pd.DataFrame(entries).groupby('作業内容')['実績(h)'].sum().reset_index()
     except: return None
 
-# --- UI ---
-st.sidebar.header("表示設定")
+# --- 4. PC操作ログ (Check/事実) ---
+def get_pc_log(target_date_val, mode="日次"):
+    try:
+        url = f"https://raw.githubusercontent.com/{REPO_NAME}/main/pc_usage_log.csv"
+        df = pd.read_csv(url, encoding='utf-8-sig', names=['timestamp', 'window_title'], header=None)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        df = df.dropna(subset=['timestamp'])
+        
+        if mode == "日次":
+            df = df[df['timestamp'].dt.date == target_date_val]
+        else:
+            start = target_date_val - timedelta(days=target_date_val.weekday())
+            df = df[(df['timestamp'].dt.date >= start) & (df['timestamp'].dt.date <= start + timedelta(days=6))]
+        
+        if df.empty: return None
+        def detect(t):
+            t = str(t).lower()
+            if 'automation studio' in t: return '設計'
+            if 'visual studio' in t or 'vscode' in t: return '開発'
+            if 'excel' in t: return '事務'
+            if 'chrome' in t or 'edge' in t: return '調査'
+            return 'その他'
+        df['アプリ'] = df['window_title'].apply(detect)
+        res = df['アプリ'].value_counts().reset_index()
+        res.columns = ['アプリ', '時間(h)']
+        res['時間(h)'] = round(res['時間(h)'] * 10 / 3600, 2)
+        return res
+    except: return None
+
+# --- UIメイン ---
+st.sidebar.header("🗓️ PDCA設定")
 analysis_mode = st.sidebar.radio("分析範囲:", ["日次", "週次"])
 target_date = st.sidebar.date_input("基準日:", date.today())
 
-st.sidebar.markdown("---")
-st.sidebar.header("PCログリモコン")
-if st.sidebar.checkbox("PCログ記録を開始"):
-    update_github_status("ON")
-    st.sidebar.success("指示を送信: ON")
+st.title(f"🚀 Work PDCA Dashboard: {analysis_mode}")
+
+# データ取得
+df_plan = get_asana_plan(target_date)
+df_do = get_toggl_do(target_date, analysis_mode)
+df_pc = get_pc_log(target_date, analysis_mode)
+
+# --- PDCA 振り返りセクション (Check) ---
+st.header("🔍 予定 vs 実績 (Plan vs Do)")
+if df_plan is not None and df_do is not None:
+    # データを結合
+    df_merge = pd.merge(df_plan, df_do, on="作業内容", how="outer").fillna(0)
+    df_merge['差分(h)'] = df_merge['実績(h)'] - df_merge['予定(h)']
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        fig = px.bar(df_merge, x="作業内容", y=["予定(h)", "実績(h)"], barmode="group", title="作業時間比較")
+        st.plotly_chart(fig, use_container_width=True)
+    with col2:
+        st.write("📈 予実詳細")
+        st.table(df_merge)
+    
+    # 改善アクションの示唆 (Act)
+    st.info("💡 **Actのヒント:** 実績が予定を大幅に超えたタスクは、Asanaにその理由（割り込みがあった、難易度が高かった等）をメモし、次回の予定時間を調整しましょう。")
 else:
-    update_github_status("OFF")
-    st.sidebar.warning("指示を送信: OFF")
-
-st.title(f"📊 業務分析: {analysis_mode}")
-
-df_pc, period_text = get_pc_analysis(target_date, analysis_mode)
-if df_pc is not None:
-    st.subheader(f"💻 PC操作ログの内訳 {period_text}")
-    c1, c2 = st.columns([2, 1])
-    with c1: st.plotly_chart(px.pie(df_pc, values='合計時間(h)', names='アプリ', hole=0.4), use_container_width=True)
-    with c2: st.table(df_pc)
-else: st.info(f"💡 {target_date} のPCログはありません。")
+    st.warning("⚠️ 比較データが足りません（Asanaの期限設定かTogglの記録を確認してください）")
 
 st.markdown("---")
 
-df_toggl = get_toggl_analysis(target_date, analysis_mode)
-if df_toggl is not None:
-    st.subheader(f"⏱️ Toggl 作業記録 {analysis_mode}")
-    c3, c4 = st.columns([2, 1])
-    with c3: st.plotly_chart(px.bar(df_toggl, x='作業内容', y='時間(h)', color='作業内容', text_auto=True), use_container_width=True)
-    with c4: st.table(df_toggl)
-else: st.warning(f"⚠️ {target_date} の Toggl 記録が見つかりません。")
+# --- 客観的事実の確認 ---
+st.header("💻 PCログの事実確認")
+if df_pc is not None:
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        st.plotly_chart(px.pie(df_pc, values='時間(h)', names='アプリ', hole=0.4), use_container_width=True)
+    with c2:
+        st.write("ログから見える「集中度」")
+        st.dataframe(df_pc, use_container_width=True)
+else:
+    st.info("PCログがありません。")
