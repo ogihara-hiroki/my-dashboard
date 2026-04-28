@@ -29,21 +29,31 @@ def update_github_status(status_text):
         requests.put(url, headers=headers, json=data)
     except: pass
 
-# --- 2. Asana予定取得 (Plan) ---
+# --- 2. Asana予定取得 (取得条件を緩和) ---
 def get_asana_plan(target_date_val):
     try:
         url = "https://app.asana.com/api/1.0/tasks"
         headers = {"Authorization": f"Bearer {ASANA_TOKEN}"}
-        # completed（完了状態）も取得
-        params = {"workspace": ASANA_WORKSPACE_ID, "assignee": "me", "opt_fields": "name,due_on,custom_fields,completed"}
-        res = requests.get(url, headers=headers, params=params)
-        if res.status_code != 200: return None
         
+        # 修正ポイント: completed_since=now を外して過去分や完了分も取得対象に含める
+        params = {
+            "workspace": ASANA_WORKSPACE_ID, 
+            "assignee": "me", 
+            "opt_fields": "name,due_on,custom_fields,completed",
+            "completed_since": "2024-01-01T00:00:00.000Z" # 十分に古い日付を指定して全取得
+        }
+        
+        res = requests.get(url, headers=headers, params=params)
+        if res.status_code != 200:
+            return None
+            
         tasks = res.json().get('data', [])
         plan_data = []
+        target_date_str = target_date_val.strftime('%Y-%m-%d')
+        
         for t in tasks:
-            if t.get('due_on') == target_date_val.strftime('%Y-%m-%d'):
-                # 紐付け用の「純粋な名前」と、表示用の「マーク付きの名前」を分ける
+            # 期限が今日の日付と一致するかチェック
+            if t.get('due_on') == target_date_str:
                 raw_name = t['name']
                 mark = "✅ " if t.get('completed') else "⏳ "
                 display_name = mark + raw_name
@@ -52,9 +62,13 @@ def get_asana_plan(target_date_val):
                 for cf in t.get('custom_fields', []):
                     if '予定' in cf.get('name', '') or 'Estimate' in cf.get('name', ''):
                         estimate = cf.get('number_value') or 0
+                
                 plan_data.append({"作業内容": raw_name, "表示名": display_name, "予定(h)": estimate})
+        
         return pd.DataFrame(plan_data) if plan_data else None
-    except: return None
+    except Exception as e:
+        st.error(f"Asana取得エラー: {e}")
+        return None
 
 # --- 3. Toggl実績取得 (Do) ---
 def get_toggl_do(target_date_val):
