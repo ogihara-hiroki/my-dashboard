@@ -98,56 +98,46 @@ df_do = get_toggl_do(target_date)
 
 st.header("🔍 予実分析 (Plan vs Do)")
 
-# --- データの結合ロジック (ここが重要) ---
+# --- データの表示ロジック (Plan優先) ---
 df_merge = None
 
+# 1. Asana(Plan) と Toggl(Do) を個別に処理
 if df_plan is not None and df_do is not None:
-    # 両方ある場合は「作業内容」をキーに結合 (outer結合で漏れを防ぐ)
+    # 両方ある場合は「作業内容」で結合
     df_merge = pd.merge(df_plan, df_do, on="作業内容", how="outer").fillna(0)
-    # Togglにしかない作業（飛び込み）の表示名を補完
+    # 表示名の補完（Togglにしかない突発作業用）
     df_merge['表示名'] = df_merge.apply(
-        lambda row: row['表示名'] if row['表示名'] != 0 else "⚡ " + row['作業内容'], axis=1
+        lambda r: r['表示名'] if isinstance(r['表示名'], str) else "⚡ " + str(r['作業内容']), axis=1
     )
 elif df_plan is not None:
-    # 予定（Asana）しかない場合（朝の状態）
+    # 予定(Asana)しかない場合（朝はこのルートを通るはず）
     df_merge = df_plan.copy()
     df_merge["実績(h)"] = 0.0
 elif df_do is not None:
-    # 実績（Toggl）しかない場合
+    # 実績(Toggl)しかない場合
     df_merge = df_do.copy()
     df_merge["予定(h)"] = 0.0
     df_merge["表示名"] = "⚡ " + df_merge["作業内容"]
 
-# 表示処理
+# 2. 表示処理の実行
 if df_merge is not None:
-    # 差分計算と並び替え (実績の大きい順)
+    # 差分計算
     df_merge['差分(h)'] = (df_merge['実績(h)'] - df_merge['予定(h)']).round(1)
-    df_merge = df_merge.sort_values('実績(h)', ascending=False)
+    
+    # 予定(Plan)があるものを優先的に上に表示
+    df_merge = df_merge.sort_values(['予定(h)', '実績(h)'], ascending=False)
     
     c1, c2 = st.columns([2, 1])
     with c1:
-        # グラフ表示
         fig = px.bar(df_merge, x="表示名", y=["予定(h)", "実績(h)"], 
                      barmode="group", text_auto='.1f',
                      category_orders={"表示名": df_merge["表示名"].tolist()})
         st.plotly_chart(fig, use_container_width=True)
-        
-        # 総実績時間のサマリー
-        total_do = df_merge['実績(h)'].sum()
-        st.metric(label="本日の総実績時間", value=f"{total_do:.1f} h")
+        st.metric(label="本日の総実績", value=f"{df_merge['実績(h)'].sum():.1f} h")
         
     with c2:
         st.write("📊 予実詳細（h）")
-        # 必要な列だけを並び替えて表示
-        display_df = df_merge[['表示名', '予定(h)', '実績(h)', '差分(h)']]
-        st.table(display_df.style.format("{:.1f}", subset=["予定(h)", "実績(h)", "差分(h)"]))
-        
-        # 合計の表示
-        st.markdown(f"""
-        | 項目 | 合計時間 |
-        | :--- | :--- |
-        | **予定合計** | **{df_merge['予定(h)'].sum():.1f} h** |
-        | **実績合計** | **{df_merge['実績(h)'].sum():.1f} h** |
-        """)
+        st.table(df_merge[['表示名', '予定(h)', '実績(h)', '差分(h)']].style.format("{:.1f}", subset=["予定(h)", "実績(h)", "差分(h)"]))
 else:
+    # どちらも無い場合のメッセージ
     st.info(f"💡 {target_date} の予定（Asana）または実績（Toggl）が見つかりません。")
