@@ -16,7 +16,7 @@ ASANA_WORKSPACE_ID = '1200313649553191'
 
 st.set_page_config(page_title="Work PDCA Dashboard", layout="wide")
 
-# --- 1. GitHubリモコン ---
+# --- 1. GitHubリモコン (Act用) ---
 def update_github_status(status_text):
     try:
         url = f"https://api.github.com/repos/{REPO_NAME}/contents/{STATUS_FILE}"
@@ -29,44 +29,45 @@ def update_github_status(status_text):
         requests.put(url, headers=headers, json=data)
     except: pass
 
-# --- 2. Asana予定取得 (完了状態も取得) ---
+# --- 2. Asana予定取得 (Plan) ---
 def get_asana_plan(target_date_val):
     try:
         url = "https://app.asana.com/api/1.0/tasks"
         headers = {"Authorization": f"Bearer {ASANA_TOKEN}"}
-        # opt_fields に 'completed' を追加
+        # completed（完了状態）も取得
         params = {"workspace": ASANA_WORKSPACE_ID, "assignee": "me", "opt_fields": "name,due_on,custom_fields,completed"}
         res = requests.get(url, headers=headers, params=params)
         if res.status_code != 200: return None
+        
         tasks = res.json().get('data', [])
         plan_data = []
         for t in tasks:
             if t.get('due_on') == target_date_val.strftime('%Y-%m-%d'):
-                # 完了していたら名前にチェックを入れる
-                status_mark = "✅ " if t.get('completed') else ""
-                display_name = status_mark + t['name']
+                # 紐付け用の「純粋な名前」と、表示用の「マーク付きの名前」を分ける
+                raw_name = t['name']
+                mark = "✅ " if t.get('completed') else "⏳ "
+                display_name = mark + raw_name
                 
                 estimate = 0
                 for cf in t.get('custom_fields', []):
                     if '予定' in cf.get('name', '') or 'Estimate' in cf.get('name', ''):
                         estimate = cf.get('number_value') or 0
-                plan_data.append({"作業内容": display_name, "予定(h)": estimate})
+                plan_data.append({"作業内容": raw_name, "表示名": display_name, "予定(h)": estimate})
         return pd.DataFrame(plan_data) if plan_data else None
     except: return None
 
-# --- 3. Toggl実績取得 (Time Entries API) ---
+# --- 3. Toggl実績取得 (Do) ---
 def get_toggl_do(target_date_val):
     try:
+        # 日本時間の範囲を計算
         start_dt = datetime.combine(target_date_val, datetime.min.time()) - timedelta(hours=9)
         end_dt = datetime.combine(target_date_val, datetime.max.time()) - timedelta(hours=9)
-        start_str = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-        end_str = end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-
-        url = f"https://api.track.toggl.com/api/v9/me/time_entries"
+        
+        url = "https://api.track.toggl.com/api/v9/me/time_entries"
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
         headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
+        params = {"start_date": start_dt.strftime('%Y-%m-%dT%H:%M:%SZ'), "end_date": end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')}
         
-        params = {"start_date": start_str, "end_date": end_str}
         res = requests.get(url, headers=headers, params=params)
         if res.status_code != 200: return None
         
@@ -79,62 +80,74 @@ def get_toggl_do(target_date_val):
             dur = item.get('duration', 0)
             if dur > 0:
                 entries.append({'作業内容': desc, '実績(h)': round(dur / 3600, 1)})
-         
+        
+        # 作業内容ごとに合計
         df = pd.DataFrame(entries).groupby('作業内容')['実績(h)'].sum().reset_index()
         return df
     except: return None
 
-# --- UIメイン ---
+# --- UI表示 ---
 st.sidebar.header("🗓️ PDCA設定")
 target_date = st.sidebar.date_input("基準日:", date.today())
 
 st.title(f"🚀 Work PDCA Dashboard")
 
+# データの取得
 df_plan = get_asana_plan(target_date)
 df_do = get_toggl_do(target_date)
 
 st.header("🔍 予実分析 (Plan vs Do)")
 
-if df_do is not None:
-    # --- データの結合と整理 ---
-    if df_plan is not None:
-        df_merge = pd.merge(df_plan, df_do, on="作業内容", how="outer").fillna(0)
-    else:
-        df_merge = df_do.copy()
-        df_merge["予定(h)"] = 0
+# --- データの結合ロジック (ここが重要) ---
+df_merge = None
 
-# 差分計算と並び替え
+if df_plan is not None and df_do is not None:
+    # 両方ある場合は「作業内容」をキーに結合 (outer結合で漏れを防ぐ)
+    df_merge = pd.merge(df_plan, df_do, on="作業内容", how="outer").fillna(0)
+    # Togglにしかない作業（飛び込み）の表示名を補完
+    df_merge['表示名'] = df_merge.apply(
+        lambda row: row['表示名'] if row['表示名'] != 0 else "⚡ " + row['作業内容'], axis=1
+    )
+elif df_plan is not None:
+    # 予定（Asana）しかない場合（朝の状態）
+    df_merge = df_plan.copy()
+    df_merge["実績(h)"] = 0.0
+elif df_do is not None:
+    # 実績（Toggl）しかない場合
+    df_merge = df_do.copy()
+    df_merge["予定(h)"] = 0.0
+    df_merge["表示名"] = "⚡ " + df_merge["作業内容"]
+
+# 表示処理
+if df_merge is not None:
+    # 差分計算と並び替え (実績の大きい順)
     df_merge['差分(h)'] = (df_merge['実績(h)'] - df_merge['予定(h)']).round(1)
     df_merge = df_merge.sort_values('実績(h)', ascending=False)
-
-    # --- 合計行の作成 ---
-    total_plan = df_merge['予定(h)'].sum()
-    total_do = df_merge['実績(h)'].sum()
-    total_diff = df_merge['差分(h)'].sum()
-
-    # --- 表示 ---
+    
     c1, c2 = st.columns([2, 1])
     with c1:
-        fig = px.bar(df_merge, x="作業内容", y=["予定(h)", "実績(h)"], 
+        # グラフ表示
+        fig = px.bar(df_merge, x="表示名", y=["予定(h)", "実績(h)"], 
                      barmode="group", text_auto='.1f',
-                     category_orders={"作業内容": df_merge["作業内容"].tolist()})
+                     category_orders={"表示名": df_merge["表示名"].tolist()})
         st.plotly_chart(fig, use_container_width=True)
         
-        # 合計時間のサマリーを表示
-        st.metric(label="本日の総実績時間", value=f"{total_do:.1f} h", delta=f"予実差 {total_diff:.1f} h")
+        # 総実績時間のサマリー
+        total_do = df_merge['実績(h)'].sum()
+        st.metric(label="本日の総実績時間", value=f"{total_do:.1f} h")
         
     with c2:
         st.write("📊 予実詳細（h）")
-        # 完了マークの反映（Asanaから取得したデータに完了フラグがある場合）
-        # ※ get_asana_planで 'completed' フィールドを取得するように修正が必要です
-        st.table(df_merge.style.format("{:.1f}", subset=["予定(h)", "実績(h)", "差分(h)"]))
-
-        # 末尾に合計を表示する簡易テーブル
+        # 必要な列だけを並び替えて表示
+        display_df = df_merge[['表示名', '予定(h)', '実績(h)', '差分(h)']]
+        st.table(display_df.style.format("{:.1f}", subset=["予定(h)", "実績(h)", "差分(h)"]))
+        
+        # 合計の表示
         st.markdown(f"""
-        | 項目 | 合計 |
+        | 項目 | 合計時間 |
         | :--- | :--- |
-        | **予定合計** | **{total_plan:.1f} h** |
-        | **実績合計** | **{total_do:.1f} h** |
+        | **予定合計** | **{df_merge['予定(h)'].sum():.1f} h** |
+        | **実績合計** | **{df_merge['実績(h)'].sum():.1f} h** |
         """)
 else:
-    st.warning(f"⚠️ {target_date} の Toggl 記録が見つかりません。")
+    st.info(f"💡 {target_date} の予定（Asana）または実績（Toggl）が見つかりません。")
