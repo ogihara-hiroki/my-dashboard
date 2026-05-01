@@ -3,6 +3,7 @@ import requests, base64, pandas as pd
 import plotly.express as px
 from datetime import datetime, date, timedelta
 import urllib3
+import pytz  # ★追加：タイムゾーン用
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -88,10 +89,15 @@ def get_toggl_do(target_date_val):
         entries = [{'作業内容': i.get('description') or "未設定", '実績(h)': round(i.get('duration', 0) / 3600, 1)} for i in raw_data if i.get('duration', 0) > 0]
         return pd.DataFrame(entries).groupby('作業内容')['実績(h)'].sum().reset_index()
     except: return None
-
+        
 # --- UIメイン ---
+# 日本標準時 (JST) で今日の付を取得
+jst = pytz.timezone('Asia/Tokyo')
+today_jst = datetime.now(jst).date()
+
 st.sidebar.header("🗓️ PDCA設定")
-target_date = st.sidebar.date_input("基準日:", date.today())
+# 初期値（value）を today_jst に変更
+target_date = st.sidebar.date_input("基準日:", value=today_jst)
 st.title(f"🚀 Work PDCA Dashboard")
 
 df_plan = get_asana_plan(target_date)
