@@ -29,7 +29,7 @@ def update_github_status(status_text):
         requests.put(url, headers=headers, json=data)
     except: pass
 
-# --- 2. Asana予定取得 (Act用のメモ取得を追加) ---
+# --- 2. Asana予定取得 ---
 def get_asana_plan(target_date_val):
     try:
         url = "https://app.asana.com/api/1.0/tasks"
@@ -54,14 +54,12 @@ def get_asana_plan(target_date_val):
                 display_name = mark + raw_name
                 
                 estimate = 0
-                act_memo = "" # 改善メモ用
+                act_memo = "" 
                 
                 for cf in t.get('custom_fields', []):
                     field_name = cf.get('name', '')
-                    # Plan: 見積時間の取得
                     if any(key in field_name for key in ['見積', '予定', 'Estimate']):
                         estimate = cf.get('number_value') or 0
-                    # Act: 対策メモの取得 (テキスト型)
                     if '対策' in field_name or 'メモ' in field_name:
                         act_memo = cf.get('text_value') or ""
                 
@@ -69,7 +67,7 @@ def get_asana_plan(target_date_val):
                     "作業内容": raw_name, 
                     "表示名": display_name, 
                     "予定(h)": float(estimate),
-                    "次回の対策": act_memo # 表に追加する用
+                    "次回の対策": act_memo
                 })
         return pd.DataFrame(plan_data) if plan_data else None
     except: return None
@@ -100,23 +98,13 @@ df_plan = get_asana_plan(target_date)
 df_do = get_toggl_do(target_date)
 
 st.header("🔍 予実分析 & 改善 (PDCA)")
-if df_merge is not None:
-    # 差分計算
-    df_merge['差分(h)'] = (df_merge['実績(h)'] - df_merge['予定(h)']).round(1)
-    
-    # ★追加：グラフ表示用に「短い名前」を新しく作る (15文字以上の場合は...で省略)
-    df_merge['グラフ用名称'] = df_merge['表示名'].apply(
-        lambda x: x[:15] + "..." if len(x) > 15 else x
-    )
-    
-    # 予定があるものを優先し、実績順に並べる
-    df_merge = df_merge.sort_values(['予定(h)', '実績(h)'], ascending=False)
-    
+
+# 1. まずデータを結合する (順番を修正しました)
 df_merge = None
 if df_plan is not None and df_do is not None:
     df_merge = pd.merge(df_plan, df_do, on="作業内容", how="outer").fillna(0)
     df_merge['表示名'] = df_merge.apply(lambda r: r['表示名'] if isinstance(r['表示名'], str) else "⚡ " + str(r['作業内容']), axis=1)
-    df_merge['次回の対策'] = df_merge['次回の対策'].replace(0, "") # 飛び込み作業のメモを空文字に
+    df_merge['次回の対策'] = df_merge['次回の対策'].replace(0, "")
 elif df_plan is not None:
     df_merge = df_plan.copy()
     df_merge["実績(h)"] = 0.0
@@ -126,28 +114,33 @@ elif df_do is not None:
     df_merge["表示名"] = "⚡ " + df_merge["作業内容"]
     df_merge["次回の対策"] = ""
 
+# 2. 結合したデータがある場合に整形と表示を行う
 if df_merge is not None:
+    # 差分計算
     df_merge['差分(h)'] = (df_merge['実績(h)'] - df_merge['予定(h)']).round(1)
+    
+    # ★追加：グラフ表示用に「短い名前」を新しく作る (15文字以上の場合は...で省略)
+    df_merge['グラフ用名称'] = df_merge['表示名'].apply(
+        lambda x: x[:15] + "..." if len(x) > 15 else x
+    )
+    
+    # 並び替え
     df_merge = df_merge.sort_values(['予定(h)', '実績(h)'], ascending=False)
     
-    c1, c2 = st.columns([1, 1]) # メモを表示するために少し幅を調整
+    c1, c2 = st.columns([1, 1])
     with c1:
-        # x軸を「グラフ用名称」に変更し、ホバー(マウスを乗せた時)に「表示名」が出るようにする
         fig = px.bar(df_merge, 
                      x="グラフ用名称", 
                      y=["予定(h)", "実績(h)"], 
                      barmode="group", 
                      text_auto='.1f',
-                     hover_data={"表示名": True, "グラフ用名称": False}, # マウスを乗せればフルネームが見える
+                     hover_data={"表示名": True, "グラフ用名称": False},
                      category_orders={"グラフ用名称": df_merge["グラフ用名称"].tolist()})
-        
-        # さらにx軸のラベルを少し斜めにして読みやすくする設定
         fig.update_xaxes(tickangle=45) 
         st.plotly_chart(fig, use_container_width=True)
         
     with c2:
         st.write("📋 PDCA詳細テーブル")
-        # 「次回の対策」列を含めて表示
         st.table(df_merge[['表示名', '予定(h)', '実績(h)', '差分(h)', '次回の対策']].style.format("{:.1f}", subset=["予定(h)", "実績(h)", "差分(h)"]))
         st.metric(label="本日の総実績", value=f"{df_merge['実績(h)'].sum():.1f} h", delta=f"予定計 {df_merge['予定(h)'].sum():.1f} h", delta_color="off")
 else:
