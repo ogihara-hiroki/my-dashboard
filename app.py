@@ -100,7 +100,18 @@ df_plan = get_asana_plan(target_date)
 df_do = get_toggl_do(target_date)
 
 st.header("🔍 予実分析 & 改善 (PDCA)")
-
+if df_merge is not None:
+    # 差分計算
+    df_merge['差分(h)'] = (df_merge['実績(h)'] - df_merge['予定(h)']).round(1)
+    
+    # ★追加：グラフ表示用に「短い名前」を新しく作る (15文字以上の場合は...で省略)
+    df_merge['グラフ用名称'] = df_merge['表示名'].apply(
+        lambda x: x[:15] + "..." if len(x) > 15 else x
+    )
+    
+    # 予定があるものを優先し、実績順に並べる
+    df_merge = df_merge.sort_values(['予定(h)', '実績(h)'], ascending=False)
+    
 df_merge = None
 if df_plan is not None and df_do is not None:
     df_merge = pd.merge(df_plan, df_do, on="作業内容", how="outer").fillna(0)
@@ -121,7 +132,19 @@ if df_merge is not None:
     
     c1, c2 = st.columns([1, 1]) # メモを表示するために少し幅を調整
     with c1:
-        st.plotly_chart(px.bar(df_merge, x="表示名", y=["予定(h)", "実績(h)"], barmode="group", text_auto='.1f'), use_container_width=True)
+        # x軸を「グラフ用名称」に変更し、ホバー(マウスを乗せた時)に「表示名」が出るようにする
+        fig = px.bar(df_merge, 
+                     x="グラフ用名称", 
+                     y=["予定(h)", "実績(h)"], 
+                     barmode="group", 
+                     text_auto='.1f',
+                     hover_data={"表示名": True, "グラフ用名称": False}, # マウスを乗せればフルネームが見える
+                     category_orders={"グラフ用名称": df_merge["グラフ用名称"].tolist()})
+        
+        # さらにx軸のラベルを少し斜めにして読みやすくする設定
+        fig.update_xaxes(tickangle=45) 
+        st.plotly_chart(fig, use_container_width=True)
+        
     with c2:
         st.write("📋 PDCA詳細テーブル")
         # 「次回の対策」列を含めて表示
