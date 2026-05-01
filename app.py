@@ -29,12 +29,11 @@ def update_github_status(status_text):
         requests.put(url, headers=headers, json=data)
     except: pass
 
-# --- 2. Asana予定取得 (見積時間の取得を強化) ---
+# --- 2. Asana予定取得 (Act用のメモ取得を追加) ---
 def get_asana_plan(target_date_val):
     try:
         url = "https://app.asana.com/api/1.0/tasks"
         headers = {"Authorization": f"Bearer {ASANA_TOKEN}"}
-        # 全取得のために条件を緩和
         params = {
             "workspace": ASANA_WORKSPACE_ID, 
             "assignee": "me", 
@@ -54,17 +53,24 @@ def get_asana_plan(target_date_val):
                 mark = "✅ " if t.get('completed') else "⏳ "
                 display_name = mark + raw_name
                 
-                # カスタムフィールドから見積時間を探す
                 estimate = 0
+                act_memo = "" # 改善メモ用
+                
                 for cf in t.get('custom_fields', []):
                     field_name = cf.get('name', '')
-                    # フィールド名に以下のキーワードが含まれているかチェック
-                    if any(key in field_name for key in ['見積', '予定', 'Estimate', '期待', '工数']):
-                        # 数値(number_value)があれば取得
+                    # Plan: 見積時間の取得
+                    if any(key in field_name for key in ['見積', '予定', 'Estimate']):
                         estimate = cf.get('number_value') or 0
-                        break
+                    # Act: 対策メモの取得 (テキスト型)
+                    if '対策' in field_name or 'メモ' in field_name:
+                        act_memo = cf.get('text_value') or ""
                 
-                plan_data.append({"作業内容": raw_name, "表示名": display_name, "予定(h)": float(estimate)})
+                plan_data.append({
+                    "作業内容": raw_name, 
+                    "表示名": display_name, 
+                    "予定(h)": float(estimate),
+                    "次回の対策": act_memo # 表に追加する用
+                })
         return pd.DataFrame(plan_data) if plan_data else None
     except: return None
 
@@ -73,46 +79,33 @@ def get_toggl_do(target_date_val):
     try:
         start_dt = datetime.combine(target_date_val, datetime.min.time()) - timedelta(hours=9)
         end_dt = datetime.combine(target_date_val, datetime.max.time()) - timedelta(hours=9)
-        
         url = "https://api.track.toggl.com/api/v9/me/time_entries"
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
         headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
         params = {"start_date": start_dt.strftime('%Y-%m-%dT%H:%M:%SZ'), "end_date": end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')}
-        
         res = requests.get(url, headers=headers, params=params)
         if res.status_code != 200: return None
-        
         raw_data = res.json()
         if not raw_data: return None
-        
-        entries = []
-        for item in raw_data:
-            desc = item.get('description') or "名称未設定"
-            dur = item.get('duration', 0)
-            if dur > 0:
-                entries.append({'作業内容': desc, '実績(h)': round(dur / 3600, 1)})
-        
-        df = pd.DataFrame(entries).groupby('作業内容')['実績(h)'].sum().reset_index()
-        return df
+        entries = [{'作業内容': i.get('description') or "未設定", '実績(h)': round(i.get('duration', 0) / 3600, 1)} for i in raw_data if i.get('duration', 0) > 0]
+        return pd.DataFrame(entries).groupby('作業内容')['実績(h)'].sum().reset_index()
     except: return None
 
 # --- UIメイン ---
 st.sidebar.header("🗓️ PDCA設定")
 target_date = st.sidebar.date_input("基準日:", date.today())
-
 st.title(f"🚀 Work PDCA Dashboard")
 
 df_plan = get_asana_plan(target_date)
 df_do = get_toggl_do(target_date)
 
-st.header("🔍 予実分析 (Plan vs Do)")
+st.header("🔍 予実分析 & 改善 (PDCA)")
 
 df_merge = None
 if df_plan is not None and df_do is not None:
     df_merge = pd.merge(df_plan, df_do, on="作業内容", how="outer").fillna(0)
-    df_merge['表示名'] = df_merge.apply(
-        lambda r: r['表示名'] if isinstance(r['表示名'], str) else "⚡ " + str(r['作業内容']), axis=1
-    )
+    df_merge['表示名'] = df_merge.apply(lambda r: r['表示名'] if isinstance(r['表示名'], str) else "⚡ " + str(r['作業内容']), axis=1)
+    df_merge['次回の対策'] = df_merge['次回の対策'].replace(0, "") # 飛び込み作業のメモを空文字に
 elif df_plan is not None:
     df_merge = df_plan.copy()
     df_merge["実績(h)"] = 0.0
@@ -120,24 +113,19 @@ elif df_do is not None:
     df_merge = df_do.copy()
     df_merge["予定(h)"] = 0.0
     df_merge["表示名"] = "⚡ " + df_merge["作業内容"]
+    df_merge["次回の対策"] = ""
 
 if df_merge is not None:
-    # 差分計算
     df_merge['差分(h)'] = (df_merge['実績(h)'] - df_merge['予定(h)']).round(1)
-    # 予定があるものを優先し、実績順に並べる
     df_merge = df_merge.sort_values(['予定(h)', '実績(h)'], ascending=False)
     
-    c1, c2 = st.columns([2, 1])
+    c1, c2 = st.columns([1, 1]) # メモを表示するために少し幅を調整
     with c1:
-        fig = px.bar(df_merge, x="表示名", y=["予定(h)", "実績(h)"], 
-                     barmode="group", text_auto='.1f',
-                     category_orders={"表示名": df_merge["表示名"].tolist()})
-        st.plotly_chart(fig, use_container_width=True)
-        st.metric(label="本日の総実績", value=f"{df_merge['実績(h)'].sum():.1f} h")
-        
+        st.plotly_chart(px.bar(df_merge, x="表示名", y=["予定(h)", "実績(h)"], barmode="group", text_auto='.1f'), use_container_width=True)
     with c2:
-        st.write("📊 予実詳細（h）")
-        st.table(df_merge[['表示名', '予定(h)', '実績(h)', '差分(h)']].style.format("{:.1f}", subset=["予定(h)", "実績(h)", "差分(h)"]))
-        st.markdown(f"**予定合計: {df_merge['予定(h)'].sum():.1f} h / 実績合計: {df_merge['実績(h)'].sum():.1f} h**")
+        st.write("📋 PDCA詳細テーブル")
+        # 「次回の対策」列を含めて表示
+        st.table(df_merge[['表示名', '予定(h)', '実績(h)', '差分(h)', '次回の対策']].style.format("{:.1f}", subset=["予定(h)", "実績(h)", "差分(h)"]))
+        st.metric(label="本日の総実績", value=f"{df_merge['実績(h)'].sum():.1f} h", delta=f"予定計 {df_merge['予定(h)'].sum():.1f} h", delta_color="off")
 else:
-    st.info(f"💡 {target_date} の予定（Asana）または実績（Toggl）が見つかりません。")
+    st.info("💡 データがありません。")
