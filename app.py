@@ -18,7 +18,8 @@ ASANA_WORKSPACE_ID = '1200313649553191'
 
 st.set_page_config(page_title="Work PDCA Dashboard", layout="wide")
 
-# --- 1. データ取得関数 (単日用) ---
+# --- 1. データ取得関数 (単日用) / 5分間キャッシュ ---
+@st.cache_data(ttl=300)
 def get_asana_plan(target_date_val):
     try:
         url = "https://app.asana.com/api/1.0/tasks"
@@ -44,6 +45,7 @@ def get_asana_plan(target_date_val):
         return pd.DataFrame(plan_data) if plan_data else None
     except: return None
 
+@st.cache_data(ttl=300)
 def get_toggl_do(target_date_val):
     try:
         start_dt = datetime.combine(target_date_val, datetime.min.time()) - timedelta(hours=9)
@@ -53,6 +55,12 @@ def get_toggl_do(target_date_val):
         headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
         params = {"start_date": start_dt.strftime('%Y-%m-%dT%H:%M:%SZ'), "end_date": end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')}
         res = requests.get(url, headers=headers, params=params)
+        
+        # API制限の警告を分かりやすく
+        if res.status_code == 402:
+            st.warning("⏳ Toggl APIの制限(402)中です。1時間ほど待ってから再試行してください。")
+            return None
+            
         if res.status_code != 200: return None
         raw = res.json()
         if not raw: return None
@@ -60,7 +68,8 @@ def get_toggl_do(target_date_val):
         return pd.DataFrame(entries).groupby('作業内容')['実績(h)'].sum().reset_index()
     except: return None
 
-# --- 2. 高速一括取得関数 (週次/カレンダー用) ---
+# --- 2. 高速一括取得関数 (週次/カレンダー用) / 5分間キャッシュ ---
+@st.cache_data(ttl=300)
 def get_bulk_pdca_data(start_d, end_d):
     p_map, do_map = {}, {}
     s_str = start_d.strftime('%Y-%m-%d')
@@ -79,10 +88,7 @@ def get_bulk_pdca_data(start_d, end_d):
                     for cf in t.get('custom_fields', []):
                         if any(k in cf.get('name', '') for k in ['見積', '予定', 'Estimate']): est += (cf.get('number_value') or 0)
                     p_map[due] = p_map.get(due, 0) + est
-        else:
-            st.error(f"Asanaデータ取得エラー: {res.status_code}")
-    except Exception as e: 
-        st.error(f"Asana通信エラー: {e}")
+    except: pass
 
     # Toggl一括
     try:
@@ -95,19 +101,15 @@ def get_bulk_pdca_data(start_d, end_d):
             for i in res.json():
                 dur = i.get('duration', 0)
                 if dur > 0:
-                    # ★修正：pandasの強力な日時変換ツールを使ってエラーを防止
                     dt = pd.to_datetime(i['start'])
-                    if dt.tzinfo is None:
-                        dt = dt.tz_localize('UTC')
+                    if dt.tzinfo is None: dt = dt.tz_localize('UTC')
                     d_jst = dt.tz_convert('Asia/Tokyo').strftime('%Y-%m-%d')
-                    
                     if s_str <= d_jst <= e_str:
                         do_map[d_jst] = do_map.get(d_jst, 0) + (dur / 3600)
-        else:
-            st.error(f"Togglデータ取得エラー: {res.status_code}")
-    except Exception as e: 
-        st.error(f"Togglパースエラー: {e}")
-
+        elif res.status_code == 402:
+            st.error("⚠️ Togglデータ一括取得エラー: APIの1時間制限(402)に達しました。")
+    except: pass
+    
     return p_map, do_map
 
 # --- 3. UIメイン ---
@@ -115,6 +117,13 @@ jst = pytz.timezone('Asia/Tokyo')
 today_jst = datetime.now(jst).date()
 
 st.sidebar.header("🗓️ PDCA設定")
+
+# ★追加：キャッシュクリアボタン
+if st.sidebar.button("🔄 最新データを取得 (更新)"):
+    st.cache_data.clear()
+    st.rerun()
+st.sidebar.caption("※ API制限を防ぐためデータは5分間保持されます。今すぐ最新を見たい時だけ更新ボタンを押してください。")
+
 target_date = st.sidebar.date_input("基準日:", value=today_jst)
 
 tab1, tab2, tab3 = st.tabs(["🎯 本日のPDCA", "📊 週次計画", "📅 カレンダー"])
@@ -175,7 +184,6 @@ with tab2:
 with tab3:
     st.subheader("📅 PDCAカレンダー (平日限定・高速版)")
     
-    # 前後30日分（約2ヶ月）を確実に取得する
     s_cal = today_jst - timedelta(days=30)
     e_cal = today_jst + timedelta(days=30)
     
@@ -183,10 +191,8 @@ with tab3:
         pm, dm = get_bulk_pdca_data(s_cal, e_cal)
     
     events = []
-    # 予定を青でセット
     for d, v in pm.items():
         if v > 0: events.append({"title": f"P: {v:.1f}h", "start": d, "color": "#3B82F6", "allDay": True})
-    # 実績を緑（または赤）でセット
     for d, v in dm.items():
         if v > 0: events.append({"title": f"D: {v:.1f}h", "start": d, "color": "#10B981" if v <= 8 else "#EF4444", "allDay": True})
     
