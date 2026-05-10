@@ -60,13 +60,13 @@ def get_toggl_do(target_date_val):
         return pd.DataFrame(entries).groupby('作業内容')['実績(h)'].sum().reset_index()
     except: return None
 
-# --- 2. 高速一括取得関数 (週次/カレンダー用・実績判定修正済み) ---
+# --- 2. 高速一括取得関数 (週次/カレンダー用) ---
 def get_bulk_pdca_data(start_d, end_d):
     p_map, do_map = {}, {}
     s_str = start_d.strftime('%Y-%m-%d')
     e_str = end_d.strftime('%Y-%m-%d')
     
-    # Asana一括 (取得範囲を今日の前後に限定)
+    # Asana一括
     try:
         headers = {"Authorization": f"Bearer {ASANA_TOKEN}"}
         params = {"workspace": ASANA_WORKSPACE_ID, "assignee": "me", "opt_fields": "name,due_on,custom_fields", "completed_since": s_str + "T00:00:00Z"}
@@ -79,24 +79,35 @@ def get_bulk_pdca_data(start_d, end_d):
                     for cf in t.get('custom_fields', []):
                         if any(k in cf.get('name', '') for k in ['見積', '予定', 'Estimate']): est += (cf.get('number_value') or 0)
                     p_map[due] = p_map.get(due, 0) + est
-    except: pass
+        else:
+            st.error(f"Asanaデータ取得エラー: {res.status_code}")
+    except Exception as e: 
+        st.error(f"Asana通信エラー: {e}")
 
-    # Toggl一括 (日付の判定を強化)
+    # Toggl一括
     try:
         s_utc = (datetime.combine(start_d, datetime.min.time()) - timedelta(hours=9)).strftime('%Y-%m-%dT%H:%M:%SZ')
         e_utc = (datetime.combine(end_d, datetime.max.time()) - timedelta(hours=9)).strftime('%Y-%m-%dT%H:%M:%SZ')
         auth = base64.b64encode(f"{TOGGL_TOKEN}:api_token".encode()).decode()
         res = requests.get("https://api.track.toggl.com/api/v9/me/time_entries", headers={"Authorization": f"Basic {auth}"}, params={"start_date": s_utc, "end_date": e_utc})
+        
         if res.status_code == 200:
             for i in res.json():
                 dur = i.get('duration', 0)
                 if dur > 0:
-                    # 日本時間に変換して日付を取得
-                    start_dt = datetime.fromisoformat(i['start'].replace('Z', '+00:00')).astimezone(pytz.timezone('Asia/Tokyo'))
-                    d_jst = start_dt.strftime('%Y-%m-%d')
+                    # ★修正：pandasの強力な日時変換ツールを使ってエラーを防止
+                    dt = pd.to_datetime(i['start'])
+                    if dt.tzinfo is None:
+                        dt = dt.tz_localize('UTC')
+                    d_jst = dt.tz_convert('Asia/Tokyo').strftime('%Y-%m-%d')
+                    
                     if s_str <= d_jst <= e_str:
                         do_map[d_jst] = do_map.get(d_jst, 0) + (dur / 3600)
-    except: pass
+        else:
+            st.error(f"Togglデータ取得エラー: {res.status_code}")
+    except Exception as e: 
+        st.error(f"Togglパースエラー: {e}")
+
     return p_map, do_map
 
 # --- 3. UIメイン ---
@@ -156,7 +167,6 @@ with tab2:
         for i in range(7):
             d_jst = s_week + timedelta(days=i)
             d_str = d_jst.strftime('%Y-%m-%d')
-            # 土日は除外してグラフ化
             if d_jst.weekday() < 5:
                 weekly_list.append({"日付": d_str[5:], "予定(h)": p_map.get(d_str, 0)})
         st.plotly_chart(px.line(pd.DataFrame(weekly_list), x="日付", y="予定(h)", text="予定(h)", markers=True), use_container_width=True)
@@ -164,15 +174,19 @@ with tab2:
 # --- Tab 3: カレンダー ---
 with tab3:
     st.subheader("📅 PDCAカレンダー (平日限定・高速版)")
-    s_cal = today_jst - timedelta(days=today_jst.day + 7)
-    e_cal = today_jst + timedelta(days=31)
+    
+    # 前後30日分（約2ヶ月）を確実に取得する
+    s_cal = today_jst - timedelta(days=30)
+    e_cal = today_jst + timedelta(days=30)
     
     with st.spinner('データを同期中...'):
         pm, dm = get_bulk_pdca_data(s_cal, e_cal)
     
     events = []
+    # 予定を青でセット
     for d, v in pm.items():
         if v > 0: events.append({"title": f"P: {v:.1f}h", "start": d, "color": "#3B82F6", "allDay": True})
+    # 実績を緑（または赤）でセット
     for d, v in dm.items():
         if v > 0: events.append({"title": f"D: {v:.1f}h", "start": d, "color": "#10B981" if v <= 8 else "#EF4444", "allDay": True})
     
