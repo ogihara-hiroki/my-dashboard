@@ -60,24 +60,28 @@ def get_toggl_do(target_date_val):
         return pd.DataFrame(entries).groupby('作業内容')['実績(h)'].sum().reset_index()
     except: return None
 
-# --- 2. 高速一括取得関数 (週次/カレンダー用) ---
+# --- 2. 高速一括取得関数 (週次/カレンダー用・実績判定修正済み) ---
 def get_bulk_pdca_data(start_d, end_d):
     p_map, do_map = {}, {}
-    # Asana一括
+    s_str = start_d.strftime('%Y-%m-%d')
+    e_str = end_d.strftime('%Y-%m-%d')
+    
+    # Asana一括 (取得範囲を今日の前後に限定)
     try:
         headers = {"Authorization": f"Bearer {ASANA_TOKEN}"}
-        params = {"workspace": ASANA_WORKSPACE_ID, "assignee": "me", "opt_fields": "name,due_on,custom_fields", "completed_since": "2024-01-01T00:00:00.000Z"}
+        params = {"workspace": ASANA_WORKSPACE_ID, "assignee": "me", "opt_fields": "name,due_on,custom_fields", "completed_since": s_str + "T00:00:00Z"}
         res = requests.get("https://app.asana.com/api/1.0/tasks", headers=headers, params=params)
         if res.status_code == 200:
             for t in res.json().get('data', []):
                 due = t.get('due_on')
-                if due and start_d.strftime('%Y-%m-%d') <= due <= end_d.strftime('%Y-%m-%d'):
+                if due and s_str <= due <= e_str:
                     est = 0
                     for cf in t.get('custom_fields', []):
                         if any(k in cf.get('name', '') for k in ['見積', '予定', 'Estimate']): est += (cf.get('number_value') or 0)
                     p_map[due] = p_map.get(due, 0) + est
     except: pass
-    # Toggl一括
+
+    # Toggl一括 (日付の判定を強化)
     try:
         s_utc = (datetime.combine(start_d, datetime.min.time()) - timedelta(hours=9)).strftime('%Y-%m-%dT%H:%M:%SZ')
         e_utc = (datetime.combine(end_d, datetime.max.time()) - timedelta(hours=9)).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -87,8 +91,11 @@ def get_bulk_pdca_data(start_d, end_d):
             for i in res.json():
                 dur = i.get('duration', 0)
                 if dur > 0:
-                    d_jst = (datetime.fromisoformat(i['start'].replace('Z', '+00:00')) + timedelta(hours=9)).strftime('%Y-%m-%d')
-                    do_map[d_jst] = do_map.get(d_jst, 0) + (dur / 3600)
+                    # 日本時間に変換して日付を取得
+                    start_dt = datetime.fromisoformat(i['start'].replace('Z', '+00:00')).astimezone(pytz.timezone('Asia/Tokyo'))
+                    d_jst = start_dt.strftime('%Y-%m-%d')
+                    if s_str <= d_jst <= e_str:
+                        do_map[d_jst] = do_map.get(d_jst, 0) + (dur / 3600)
     except: pass
     return p_map, do_map
 
@@ -147,20 +154,31 @@ with tab2:
         p_map, _ = get_bulk_pdca_data(s_week, e_week)
         weekly_list = []
         for i in range(7):
-            d_str = (s_week + timedelta(days=i)).strftime('%Y-%m-%d')
-            weekly_list.append({"日付": d_str[5:], "予定(h)": p_map.get(d_str, 0)})
+            d_jst = s_week + timedelta(days=i)
+            d_str = d_jst.strftime('%Y-%m-%d')
+            # 土日は除外してグラフ化
+            if d_jst.weekday() < 5:
+                weekly_list.append({"日付": d_str[5:], "予定(h)": p_map.get(d_str, 0)})
         st.plotly_chart(px.line(pd.DataFrame(weekly_list), x="日付", y="予定(h)", text="予定(h)", markers=True), use_container_width=True)
 
 # --- Tab 3: カレンダー ---
 with tab3:
-    st.subheader("📅 PDCAカレンダー (予実一括)")
-    s_cal = today_jst - timedelta(days=30)
-    e_cal = today_jst + timedelta(days=30)
-    with st.spinner('カレンダーデータ取得中...'):
+    st.subheader("📅 PDCAカレンダー (平日限定・高速版)")
+    s_cal = today_jst - timedelta(days=today_jst.day + 7)
+    e_cal = today_jst + timedelta(days=31)
+    
+    with st.spinner('データを同期中...'):
         pm, dm = get_bulk_pdca_data(s_cal, e_cal)
     
     events = []
-    for d, v in pm.items(): events.append({"title": f"P: {v:.1f}h", "start": d, "color": "#3B82F6", "allDay": True})
-    for d, v in dm.items(): events.append({"title": f"D: {v:.1f}h", "start": d, "color": "#10B981" if v <= 8 else "#EF4444", "allDay": True})
+    for d, v in pm.items():
+        if v > 0: events.append({"title": f"P: {v:.1f}h", "start": d, "color": "#3B82F6", "allDay": True})
+    for d, v in dm.items():
+        if v > 0: events.append({"title": f"D: {v:.1f}h", "start": d, "color": "#10B981" if v <= 8 else "#EF4444", "allDay": True})
     
-    calendar(events=events, options={"initialView": "dayGridMonth"})
+    cal_options = {
+        "initialView": "dayGridMonth",
+        "weekends": False,
+        "headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,dayGridWeek"},
+    }
+    calendar(events=events, options=cal_options)
