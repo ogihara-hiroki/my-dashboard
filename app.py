@@ -112,16 +112,51 @@ with tab2:
         weekly_p.append({"日付": d.strftime('%m/%d(%a)'), "予定合計(h)": df_p['予定(h)'].sum() if df_p is not None else 0})
     st.plotly_chart(px.line(pd.DataFrame(weekly_p), x="日付", y="予定合計(h)", text="予定合計(h)", markers=True), use_container_width=True)
 
-# --- Tab 3: カレンダー ---
+# --- Tab 3: カレンダー (予実両方の可視化) ---
 with tab3:
-    st.subheader("📅 PDCAカレンダー (実績確認)")
-    # カレンダー用の簡略化された実績取得
-    cal_events = []
-    for i in range(-15, 16): # 前後15日分を表示
-        d = today_jst + timedelta(days=i)
-        do = get_toggl_do(d)
-        if do is not None:
-            total = do['実績(h)'].sum()
-            cal_events.append({"title": f"実績: {total}h", "start": d.strftime('%Y-%m-%d'), "color": "#1f77b4" if total < 8 else "#ff4b4b"})
+    st.subheader("📅 PDCAカレンダー (予実一覧)")
     
-    calendar(events=cal_events, options={"initialView": "dayGridMonth"})
+    # 表示期間の設定（当日の前後15日）
+    cal_events = []
+    for i in range(-15, 16):
+        d = today_jst + timedelta(days=i)
+        
+        # 1. 予定の取得
+        p_df = get_asana_plan(d)
+        total_p = p_df['予定(h)'].sum() if p_df is not None else 0
+        
+        # 2. 実績の取得
+        do_df = get_toggl_do(d)
+        total_do = do_df['実績(h)'].sum() if do_df is not None else 0
+        
+        # カレンダーに予定(Plan)のイベントを追加 (青系)
+        if total_p > 0:
+            cal_events.append({
+                "title": f"P: {total_p:.1f}h",
+                "start": d.strftime('%Y-%m-%d'),
+                "color": "#3B82F6", # 予定は青
+                "allDay": True
+            })
+            
+        # カレンダーに実績(Do)のイベントを追加 (緑系/赤系)
+        if total_do > 0:
+            cal_events.append({
+                "title": f"D: {total_do:.1f}h",
+                "start": d.strftime('%Y-%m-%d'),
+                "color": "#10B981" if total_do <= 8 else "#EF4444", # 8h超えは警告の赤
+                "allDay": True
+            })
+    
+    # カレンダーの表示設定
+    calendar_options = {
+        "initialView": "dayGridMonth",
+        "headerToolbar": {
+            "left": "prev,next today",
+            "center": "title",
+            "right": "dayGridMonth,dayGridWeek",
+        },
+        "editable": False,
+        "selectable": True,
+    }
+    
+    calendar(events=cal_events, options=calendar_options)
