@@ -56,7 +56,6 @@ def get_toggl_do(target_date_val):
         params = {"start_date": start_dt.strftime('%Y-%m-%dT%H:%M:%SZ'), "end_date": end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')}
         res = requests.get(url, headers=headers, params=params)
         
-        # API制限の警告を分かりやすく
         if res.status_code == 402:
             st.warning("⏳ Toggl APIの制限(402)中です。1時間ほど待ってから再試行してください。")
             return None
@@ -118,7 +117,6 @@ today_jst = datetime.now(jst).date()
 
 st.sidebar.header("🗓️ PDCA設定")
 
-# ★追加：キャッシュクリアボタン
 if st.sidebar.button("🔄 最新データを取得 (更新)"):
     st.cache_data.clear()
     st.rerun()
@@ -143,12 +141,23 @@ with tab1:
 
     if df_m is not None:
         tp, td = df_m['予定(h)'].sum(), df_m['実績(h)'].sum()
-        p_do = df_m[~df_m['表示名'].str.contains("⚡")]['実績(h)'].sum()
+        
+        # 実際の作業時間（パイチャート用）
+        actual_p_time = df_m[~df_m['表示名'].str.contains("⚡")]['実績(h)'].sum()
         u_do = df_m[df_m['表示名'].str.contains("⚡")]['実績(h)'].sum()
+        
+        # 達成率計算用（早く終わった✅タスクも予定時間分達成したとみなす）
+        def calc_earned_value(row):
+            if "⚡" in row['表示名']: return 0.0
+            if "✅" in row['表示名']: return row['予定(h)']
+            return min(row['実績(h)'], row['予定(h)'])
+            
+        df_m['獲得価値'] = df_m.apply(calc_earned_value, axis=1)
+        earned_total = df_m['獲得価値'].sum()
         
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("総実績", f"{td:.1f}h")
-        c2.metric("計画達成率", f"{(p_do/tp*100) if tp>0 else 0:.0f}%")
+        c2.metric("計画達成率", f"{(earned_total/tp*100) if tp>0 else 0:.0f}%", help="完了した仕事の価値ベース")
         c3.metric("飛び込み率", f"{(u_do/td*100) if td>0 else 0:.0f}%", delta=f"{u_do:.1f}h", delta_color="inverse")
         c4.metric("予定合計", f"{tp:.1f}h")
         
@@ -159,33 +168,46 @@ with tab1:
         col1, col2 = st.columns([1, 1])
         with col1:
             st.plotly_chart(px.bar(df_m, x="短縮名", y=["予定(h)", "実績(h)"], barmode="group", text_auto='.1f'), use_container_width=True)
-            st.plotly_chart(px.pie(pd.DataFrame({"分類":["計画通り","飛び込み"],"時間":[p_do,u_do]}), values="時間", names="分類", hole=0.4), use_container_width=True)
+            st.plotly_chart(px.pie(pd.DataFrame({"分類":["計画通り","飛び込み"],"時間":[actual_p_time, u_do]}), values="時間", names="分類", hole=0.4), use_container_width=True)
         with col2:
             st.write("📋 詳細")
             st.table(df_m[['表示名', '予定(h)', '実績(h)', '差分(h)', '次回の対策']].style.format("{:.1f}", subset=["予定(h)", "実績(h)", "差分(h)"]))
     else: st.info("データがありません")
 
-# --- Tab 2: 週次計画 ---
+# --- Tab 2: 週次計画 (修正完了) ---
 with tab2:
-    st.subheader("🗓️ 今週の予定負荷（Asana）")
-    s_week = today_jst - timedelta(days=today_jst.weekday())
+    st.subheader("🗓️ 選択週の予定負荷（Asana）")
+    # today_jst ではなく、サイドバーの target_date を基準にその週を取得
+    s_week = target_date - timedelta(days=target_date.weekday())
     e_week = s_week + timedelta(days=6)
+    
     with st.spinner('週次データ取得中...'):
         p_map, _ = get_bulk_pdca_data(s_week, e_week)
         weekly_list = []
         for i in range(7):
-            d_jst = s_week + timedelta(days=i)
-            d_str = d_jst.strftime('%Y-%m-%d')
-            if d_jst.weekday() < 5:
-                weekly_list.append({"日付": d_str[5:], "予定(h)": p_map.get(d_str, 0)})
-        st.plotly_chart(px.line(pd.DataFrame(weekly_list), x="日付", y="予定(h)", text="予定(h)", markers=True), use_container_width=True)
+            d_date = s_week + timedelta(days=i)
+            d_str = d_date.strftime('%Y-%m-%d')
+            d_display = d_date.strftime('%m/%d') # 例: 05/12
+            
+            if d_date.weekday() < 5: # 土日は除外
+                weekly_list.append({"日付": d_display, "予定(h)": p_map.get(d_str, 0)})
+        
+        df_weekly = pd.DataFrame(weekly_list)
+        fig = px.line(df_weekly, x="日付", y="予定(h)", text="予定(h)", markers=True)
+        
+        # ★修正: Plotlyの勝手な日付変換を防ぐ & Y軸を0始まりに固定
+        fig.update_xaxes(type='category')
+        fig.update_layout(yaxis_range=[0, max(df_weekly['予定(h)'].max() + 2, 8)])
+        
+        st.plotly_chart(fig, use_container_width=True)
 
-# --- Tab 3: カレンダー ---
+# --- Tab 3: カレンダー (対象期間を修正) ---
 with tab3:
     st.subheader("📅 PDCAカレンダー (平日限定・高速版)")
     
-    s_cal = today_jst - timedelta(days=30)
-    e_cal = today_jst + timedelta(days=30)
+    # today_jst ではなく、サイドバーの target_date を基準に前後を取得
+    s_cal = target_date - timedelta(days=30)
+    e_cal = target_date + timedelta(days=30)
     
     with st.spinner('データを同期中...'):
         pm, dm = get_bulk_pdca_data(s_cal, e_cal)
