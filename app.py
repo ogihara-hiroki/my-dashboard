@@ -221,7 +221,7 @@ with tab2:
         
         st.plotly_chart(fig, use_container_width=True)
 
-# --- Tab 3: カレンダー (リロード完全対策版) ---
+# --- Tab 3: カレンダー (無限再描画・チラつき防止版) ---
 with tab3:
     st.subheader("📅 PDCAカレンダー (平日限定・高速版)")
     
@@ -234,7 +234,7 @@ with tab3:
     
     events = []
     if pm:
-        for i, (d, v) in enumerate(pm.items()):
+        for d, v in pm.items():
             if v > 0:
                 events.append({
                     "id": f"p_{d}",
@@ -244,7 +244,7 @@ with tab3:
                     "allDay": True
                 })
     if dm:
-        for i, (d, v) in enumerate(dm.items()):
+        for d, v in dm.items():
             if v > 0:
                 events.append({
                     "id": f"d_{d}",
@@ -265,12 +265,13 @@ with tab3:
         },
     }
     
-    # 描画キーにタイムスタンプを混ぜてリロード時のキャッシュ衝突を強制回避
-    import time
-    render_key = f"cal_{current_target.strftime('%Y%m%d')}_{int(time.time())}"
-    
-    calendar(
-        events=events,
-        options=cal_options,
-        key=render_key
-    )
+    # 描画を独立させてループを防ぐコンテナ処理
+    @st.fragment
+    def render_stable_calendar():
+        calendar(
+            events=events,
+            options=cal_options,
+            key="stable_pdca_calendar_widget"
+        )
+
+    render_stable_calendar()
