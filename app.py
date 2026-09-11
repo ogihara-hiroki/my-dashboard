@@ -144,10 +144,18 @@ with col_date:
 
 target_date = st.session_state.target_date
 
-tab1, tab2, tab3 = st.tabs(["🎯 本日のPDCA", "📊 週次計画", "📅 カレンダー"])
+# --- タブ切り替え（リロード時の描画不具合を完全に防ぐ構造） ---
+selected_tab = st.radio(
+    "表示切替",
+    ["🎯 本日のPDCA", "📊 週次計画", "📅 カレンダー"],
+    horizontal=True,
+    label_visibility="collapsed"
+)
+
+st.markdown("---")
 
 # --- Tab 1: 本日のPDCA ---
-with tab1:
+if selected_tab == "🎯 本日のPDCA":
     df_p = get_asana_plan(target_date)
     df_d = get_toggl_do(target_date)
     df_m = None
@@ -162,11 +170,9 @@ with tab1:
     if df_m is not None:
         tp, td = df_m['予定(h)'].sum(), df_m['実績(h)'].sum()
         
-        # 実際の作業時間（パイチャート用）
         actual_p_time = df_m[~df_m['表示名'].str.contains("⚡")]['実績(h)'].sum()
         u_do = df_m[df_m['表示名'].str.contains("⚡")]['実績(h)'].sum()
         
-        # 達成率計算用（早く終わった✅タスクも予定時間分達成したとみなす）
         def calc_earned_value(row):
             if "⚡" in row['表示名']: return 0.0
             if "✅" in row['表示名']: return row['予定(h)']
@@ -194,10 +200,9 @@ with tab1:
             st.table(df_m[['表示名', '予定(h)', '実績(h)', '差分(h)', '次回の対策']].style.format("{:.1f}", subset=["予定(h)", "実績(h)", "差分(h)"]))
     else: st.info("データがありません")
 
-# --- Tab 2: 週次計画 (修正完了) ---
-with tab2:
+# --- Tab 2: 週次計画 ---
+elif selected_tab == "📊 週次計画":
     st.subheader("🗓️ 選択週の予定負荷（Asana）")
-    # today_jst ではなく、サイドバーの target_date を基準にその週を取得
     s_week = target_date - timedelta(days=target_date.weekday())
     e_week = s_week + timedelta(days=6)
     
@@ -207,22 +212,19 @@ with tab2:
         for i in range(7):
             d_date = s_week + timedelta(days=i)
             d_str = d_date.strftime('%Y-%m-%d')
-            d_display = d_date.strftime('%m/%d') # 例: 05/12
+            d_display = d_date.strftime('%m/%d')
             
-            if d_date.weekday() < 5: # 土日は除外
+            if d_date.weekday() < 5:
                 weekly_list.append({"日付": d_display, "予定(h)": p_map.get(d_str, 0)})
         
         df_weekly = pd.DataFrame(weekly_list)
         fig = px.line(df_weekly, x="日付", y="予定(h)", text="予定(h)", markers=True)
-        
-        # ★修正: Plotlyの勝手な日付変換を防ぐ & Y軸を0始まりに固定
         fig.update_xaxes(type='category')
         fig.update_layout(yaxis_range=[0, max(df_weekly['予定(h)'].max() + 2, 8)])
-        
         st.plotly_chart(fig, use_container_width=True)
 
-# --- Tab 3: カレンダー (リロード対策・コンテナリセット版) ---
-with tab3:
+# --- Tab 3: カレンダー ---
+elif selected_tab == "📅 カレンダー":
     st.subheader("📅 PDCAカレンダー (平日限定・高速版)")
     
     current_target = st.session_state.get("target_date", today_jst)
@@ -265,11 +267,8 @@ with tab3:
         },
     }
     
-    # コンテナを一度生成して確実に描画領域をクリア＆再生成する
-    cal_container = st.empty()
-    with cal_container:
-        calendar(
-            events=events,
-            options=cal_options,
-            key="pdca_calendar_container_fixed"
-        )
+    calendar(
+        events=events,
+        options=cal_options,
+        key="fixed_pdca_calendar"
+    )
