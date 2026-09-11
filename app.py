@@ -221,13 +221,15 @@ with tab2:
         
         st.plotly_chart(fig, use_container_width=True)
 
-# --- Tab 3: カレンダー (対象期間を修正) ---
+# --- Tab 3: カレンダー (再読み込み・描画安定化版) ---
 with tab3:
     st.subheader("📅 PDCAカレンダー (平日限定・高速版)")
     
-    # target_date を基準に前後を取得
-    s_cal = target_date - timedelta(days=30)
-    e_cal = target_date + timedelta(days=30)
+    # セッション状態から確実に基準日を取得
+    current_target = st.session_state.get("target_date", today_jst)
+    
+    s_cal = current_target - timedelta(days=30)
+    e_cal = current_target + timedelta(days=30)
     
     with st.spinner('データを同期中...'):
         pm, dm = get_bulk_pdca_data(s_cal, e_cal)
@@ -238,7 +240,7 @@ with tab3:
         for i, (d, v) in enumerate(pm.items()):
             if v > 0:
                 events.append({
-                    "id": f"p_{i}_{d}",
+                    "id": f"p_{d}",
                     "title": f"P: {v:.1f}h",
                     "start": str(d),
                     "color": "#3B82F6",
@@ -249,7 +251,7 @@ with tab3:
         for i, (d, v) in enumerate(dm.items()):
             if v > 0:
                 events.append({
-                    "id": f"d_{i}_{d}",
+                    "id": f"d_{d}",
                     "title": f"D: {v:.1f}h",
                     "start": str(d),
                     "color": "#10B981" if v <= 8 else "#EF4444",
@@ -258,7 +260,7 @@ with tab3:
     
     cal_options = {
         "initialView": "dayGridMonth",
-        "initialDate": target_date.strftime('%Y-%m-%d'), # 基準日を中心に表示
+        "initialDate": current_target.strftime('%Y-%m-%d'),
         "weekends": False,
         "headerToolbar": {
             "left": "prev,next today",
@@ -267,5 +269,6 @@ with tab3:
         },
     }
     
-    # キーを明示的に指定して再レンダリングを安定化
-    calendar(events=events, options=cal_options, key="pdca_calendar")
+    # リロード時にも確実に描画されるよう動的なキーを生成
+    cal_key = f"pdca_calendar_{current_target.strftime('%Y%m%d')}_{len(events)}"
+    calendar(events=events, options=cal_options, key=cal_key)
