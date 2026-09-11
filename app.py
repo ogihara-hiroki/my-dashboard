@@ -225,7 +225,7 @@ with tab2:
 with tab3:
     st.subheader("📅 PDCAカレンダー (平日限定・高速版)")
     
-    # today_jst ではなく、サイドバーの target_date を基準に前後を取得
+    # target_date を基準に前後を取得
     s_cal = target_date - timedelta(days=30)
     e_cal = target_date + timedelta(days=30)
     
@@ -233,14 +233,39 @@ with tab3:
         pm, dm = get_bulk_pdca_data(s_cal, e_cal)
     
     events = []
-    for d, v in pm.items():
-        if v > 0: events.append({"title": f"P: {v:.1f}h", "start": d, "color": "#3B82F6", "allDay": True})
-    for d, v in dm.items():
-        if v > 0: events.append({"title": f"D: {v:.1f}h", "start": d, "color": "#10B981" if v <= 8 else "#EF4444", "allDay": True})
+    # Plan (青)
+    if pm:
+        for i, (d, v) in enumerate(pm.items()):
+            if v > 0:
+                events.append({
+                    "id": f"p_{i}_{d}",
+                    "title": f"P: {v:.1f}h",
+                    "start": str(d),
+                    "color": "#3B82F6",
+                    "allDay": True
+                })
+    # Do (緑/赤)
+    if dm:
+        for i, (d, v) in enumerate(dm.items()):
+            if v > 0:
+                events.append({
+                    "id": f"d_{i}_{d}",
+                    "title": f"D: {v:.1f}h",
+                    "start": str(d),
+                    "color": "#10B981" if v <= 8 else "#EF4444",
+                    "allDay": True
+                })
     
     cal_options = {
         "initialView": "dayGridMonth",
+        "initialDate": target_date.strftime('%Y-%m-%d'), # 基準日を中心に表示
         "weekends": False,
-        "headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,dayGridWeek"},
+        "headerToolbar": {
+            "left": "prev,next today",
+            "center": "title",
+            "right": "dayGridMonth,dayGridWeek"
+        },
     }
-    calendar(events=events, options=cal_options)
+    
+    # キーを明示的に指定して再レンダリングを安定化
+    calendar(events=events, options=cal_options, key="pdca_calendar")
