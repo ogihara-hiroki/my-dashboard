@@ -122,7 +122,27 @@ if st.sidebar.button("🔄 最新データを取得 (更新)"):
     st.rerun()
 st.sidebar.caption("※ API制限を防ぐためデータは5分間保持されます。今すぐ最新を見たい時だけ更新ボタンを押してください。")
 
-target_date = st.sidebar.date_input("基準日:", value=today_jst)
+# --- 日付変更（スワイプの代わりとなる直感的ボタン） ---
+if "target_date" not in st.session_state:
+    st.session_state.target_date = today_jst
+
+# 日付移動の処理関数
+def move_date(days):
+    st.session_state.target_date += timedelta(days=days)
+
+# 画面上部とサイドバーに前日/翌日ボタンを配置
+col_prev, col_date, col_next = st.columns([1, 2, 1])
+with col_prev:
+    st.button("◀ 前日", on_click=move_date, args=(-1,), use_container_width=True)
+with col_next:
+    st.button("翌日 ▶", on_click=move_date, args=(1,), use_container_width=True)
+with col_date:
+    # カレンダー選択用（session_stateと同期）
+    selected_date = st.date_input("基準日", value=st.session_state.target_date, label_visibility="collapsed")
+    if selected_date != st.session_state.target_date:
+        st.session_state.target_date = selected_date
+
+target_date = st.session_state.target_date
 
 tab1, tab2, tab3 = st.tabs(["🎯 本日のPDCA", "📊 週次計画", "📅 カレンダー"])
 
