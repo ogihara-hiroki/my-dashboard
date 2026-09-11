@@ -221,7 +221,7 @@ with tab2:
         
         st.plotly_chart(fig, use_container_width=True)
 
-# --- Tab 3: カレンダー (無限再描画・チラつき防止版) ---
+# --- Tab 3: カレンダー (描画安定化・最終版) ---
 with tab3:
     st.subheader("📅 PDCAカレンダー (平日限定・高速版)")
     
@@ -265,13 +265,9 @@ with tab3:
         },
     }
     
-    # 描画を独立させてループを防ぐコンテナ処理
-    @st.fragment
-    def render_stable_calendar():
-        calendar(
-            events=events,
-            options=cal_options,
-            key="stable_pdca_calendar_widget"
-        )
-
-    render_stable_calendar()
+    # 静的なキーを指定してそのままレンダリング
+    calendar(
+        events=events,
+        options=cal_options,
+        key="main_pdca_calendar"
+    )
