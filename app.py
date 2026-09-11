@@ -221,13 +221,11 @@ with tab2:
         
         st.plotly_chart(fig, use_container_width=True)
 
-# --- Tab 3: カレンダー (再読み込み・描画安定化版) ---
+# --- Tab 3: カレンダー (リロード完全対策版) ---
 with tab3:
     st.subheader("📅 PDCAカレンダー (平日限定・高速版)")
     
-    # セッション状態から確実に基準日を取得
     current_target = st.session_state.get("target_date", today_jst)
-    
     s_cal = current_target - timedelta(days=30)
     e_cal = current_target + timedelta(days=30)
     
@@ -235,7 +233,6 @@ with tab3:
         pm, dm = get_bulk_pdca_data(s_cal, e_cal)
     
     events = []
-    # Plan (青)
     if pm:
         for i, (d, v) in enumerate(pm.items()):
             if v > 0:
@@ -246,7 +243,6 @@ with tab3:
                     "color": "#3B82F6",
                     "allDay": True
                 })
-    # Do (緑/赤)
     if dm:
         for i, (d, v) in enumerate(dm.items()):
             if v > 0:
@@ -269,6 +265,12 @@ with tab3:
         },
     }
     
-    # リロード時にも確実に描画されるよう動的なキーを生成
-    cal_key = f"pdca_calendar_{current_target.strftime('%Y%m%d')}_{len(events)}"
-    calendar(events=events, options=cal_options, key=cal_key)
+    # 描画キーにタイムスタンプを混ぜてリロード時のキャッシュ衝突を強制回避
+    import time
+    render_key = f"cal_{current_target.strftime('%Y%m%d')}_{int(time.time())}"
+    
+    calendar(
+        events=events,
+        options=cal_options,
+        key=render_key
+    )
